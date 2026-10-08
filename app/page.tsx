@@ -1354,9 +1354,40 @@ export default function Home() {
                 {run.mode === "demo"
                   ? "本研究全部金融数值为构造数据，仅验证流程。 "
                   : ""}
-                {run.planner === "rules"
-                  ? "规划使用规则降级；研究结论仍以实际取得的数据为依据。"
-                  : ""}
+                {run.planner === "rules" && (
+                  <div className="planning-notice">
+                    <strong>
+                      {run.modelSelection?.source === "rules"
+                        ? "你已选择规则规划"
+                        : "AI 规划未成功，已生成备用计划"}
+                    </strong>
+                    <p>
+                      {run.modelSelection?.source === "rules"
+                        ? "本次按预设规则生成任务，不调用模型规划。"
+                        : run.events.findLast(
+                            (e) =>
+                              e.type === "model_fallback" &&
+                              e.message === "已启用规则规划降级",
+                          )?.detail ||
+                          "模型未能生成有效计划，请检查模型设置后重试。"}
+                    </p>
+                    <p>请先核对下方研究路径；执行时仍会调用真实数据工具。</p>
+                    {run.modelSelection?.source !== "rules" &&
+                      ["ready", "needs_input"].includes(run.status) &&
+                      !run.evidence.length &&
+                      run.steps.every((s) => s.attempts === 0) && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => action("retry_plan")}
+                        >
+                          <RotateCcw size={14} />
+                          重新尝试 AI 规划
+                        </Button>
+                      )}
+                  </div>
+                )}
               </div>
             )}
             {run.approval && (

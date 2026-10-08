@@ -390,6 +390,28 @@ export function applyAction(
       "将使用现有证据生成部分报告",
       "跳过尚未执行的数据任务；不追加外部数据调用。",
     );
+  } else if (action === "retry_plan") {
+    if (run.modelSelection?.source === "rules")
+      throw new Error("当前选择了规则模式，请使用模型新建研究");
+    if (
+      !["ready", "needs_input"].includes(run.status) ||
+      run.planner !== "rules" ||
+      run.evidence.length ||
+      run.steps.some((s) => s.attempts > 0)
+    )
+      throw new Error("只能在尚未取数的规则计划上重试模型规划");
+    if (run.approval) throw new Error("请先处理待审批事项");
+    run.status = "planning";
+    run.planner = "pending";
+    run.intent = undefined;
+    run.steps = [];
+    run.scopeApproved = false;
+    event(
+      run,
+      "plan_retry",
+      "用户重新请求模型规划",
+      "保留原目标和已用调用预算，新计划需再次确认后执行。",
+    );
   } else if (action === "clarify") {
     if (run.status !== "needs_input") throw new Error("当前研究不需要补充信息");
     const text = String(payload.text ?? "").trim();

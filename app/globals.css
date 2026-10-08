@@ -716,6 +716,16 @@ button:disabled {
   flex-shrink: 0;
   margin-top: 4px;
 }
+.planning-notice {
+  min-width: 0;
+}
+.planning-notice p {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+.planning-notice button {
+  margin-top: 6px;
+}
 .run-stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
