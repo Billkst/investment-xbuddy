@@ -122,7 +122,8 @@ export interface Run {
   events: ResearchEvent[];
   evidence: Evidence[];
   report?: Report;
-  planner: "model" | "rules" | "pending";
+  planner: "model" | "rules" | "pending" | "failed";
+  modelRetryAt?: string;
   modelSelection?: ModelSelection;
   planVersion: number;
   approval?: Approval;
@@ -165,12 +166,19 @@ export interface RuntimeConfig {
   contextLimit: number;
   onProgress?: (run: Run) => Promise<void>;
   beforeModelCall?: (reservedTokens: number) => Promise<void>;
+  settleModelCall?: (
+    reservedTokens: number,
+    actualTokens: number,
+  ) => Promise<void>;
+  onModelRateLimit?: (waitMs: number) => Promise<void>;
 }
 export interface PlannerResult {
   intent: Intent;
   steps: Pick<Step, "title" | "tool" | "security" | "parameters">[];
   model: boolean;
   warning?: string;
+  blocked?: boolean;
+  retryAfterMs?: number;
 }
 export const now = () => new Date().toISOString();
 export const uid = (prefix: string) =>

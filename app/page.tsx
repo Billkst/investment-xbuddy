@@ -251,6 +251,16 @@ export default function Home() {
   const [modelBusy, setModelBusy] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
   const [modelTestOk, setModelTestOk] = useState(false);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!run?.modelRetryAt) return;
+    setClockNow(Date.now());
+    const timer = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [run?.modelRetryAt]);
+  const modelWaitSeconds = run?.modelRetryAt
+    ? Math.max(0, Math.ceil((Date.parse(run.modelRetryAt) - clockNow) / 1000))
+    : 0;
   const activeModel =
     run && view === "research"
       ? (run.modelSelection ?? { source: "site" as const })
@@ -261,7 +271,7 @@ export default function Home() {
       : activeModel.source === "site"
         ? boot?.config.model
           ? "共享模型 · 已配置"
-          : "AI 未接入 · 规则运行"
+          : "共享模型 · 待配置"
         : personalCredential?.provider === activeModel.provider &&
             personalCredential?.model === activeModel.model
           ? "个人模型 · 已配置"
@@ -616,7 +626,7 @@ export default function Home() {
     const r = run.report;
     const text = [
       `# ${r.title}`,
-      `\n数据模式：${run.mode === "demo" ? "构造数据演示" : "真实数据"}；规划：${run.planner === "model" ? "模型" : "规则降级"}`,
+      `\n数据模式：${run.mode === "demo" ? "构造数据演示" : "真实数据"}；规划：${run.planner === "model" ? "模型" : "规则规划"}`,
       `\n研究目标：${run.goal}`,
       `\n${r.summary}`,
       "\n## 研究发现",
@@ -745,7 +755,9 @@ export default function Home() {
             <p>
               {run.status === "needs_input"
                 ? "补充信息后，将生成可执行的研究计划。"
-                : "正在识别研究目标、可用工具与约束…"}
+                : run.planner === "failed"
+                  ? "研究目标已保留，等待重新规划。"
+                  : "正在识别研究目标、可用工具与约束…"}
             </p>
           </div>
         ) : (
@@ -818,19 +830,21 @@ export default function Home() {
           </p>
         ))}
       </div>
-      {["paused", "waiting_approval", "failed"].includes(run.status) && (
-        <div className="partial-action">
-          <p>{run.pauseReason ?? "你也可以使用当前已有证据完成研究。"}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => action("partial")}
-          >
-            生成部分报告
-          </Button>
-        </div>
-      )}
+      {run.intent &&
+        run.planner !== "failed" &&
+        ["paused", "waiting_approval", "failed"].includes(run.status) && (
+          <div className="partial-action">
+            <p>{run.pauseReason ?? "你也可以使用当前已有证据完成研究。"}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => action("partial")}
+            >
+              生成部分报告
+            </Button>
+          </div>
+        )}
     </>
   ) : null;
   const reportPanel = run?.report ? (
@@ -1271,7 +1285,9 @@ export default function Home() {
                   ) : (
                     <Clock size={13} />
                   )}{" "}
-                  {statusText[run.status]}
+                  {run.planner === "failed"
+                    ? "AI 规划待重试"
+                    : statusText[run.status]}
                 </span>
                 {run.report && (
                   <Button size="sm" variant="outline" onClick={download}>
@@ -1337,9 +1353,11 @@ export default function Home() {
                 <BrainCircuit size={13} />
                 {run.planner === "pending"
                   ? "规划中"
-                  : run.planner === "model"
-                    ? "模型规划"
-                    : "规则规划"}
+                  : run.planner === "failed"
+                    ? "规划待重试"
+                    : run.planner === "model"
+                      ? "模型规划"
+                      : "规则规划"}
               </span>
               {run.intent && (
                 <span className="muted-tag">
@@ -1348,6 +1366,37 @@ export default function Home() {
                 </span>
               )}
             </div>
+            {run.planner === "failed" && (
+              <div className="inline-note planning-failure" role="status">
+                <AlertTriangle size={16} />
+                <div className="planning-notice">
+                  <strong>AI 规划暂未完成</strong>
+                  <p>{run.pauseReason}</p>
+                  <p>
+                    尚未开始金融取数。你可以重试，或明确选择按规则生成计划。
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={busy || modelWaitSeconds > 0}
+                    onClick={() => action("retry_plan")}
+                  >
+                    <RotateCcw size={14} />
+                    {modelWaitSeconds > 0
+                      ? `${modelWaitSeconds} 秒后可重试`
+                      : "重新尝试 AI 规划"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busy}
+                    onClick={() => action("model_rules")}
+                  >
+                    选择规则规划
+                  </Button>
+                </div>
+              </div>
+            )}
             {(run.mode === "demo" || run.planner === "rules") && (
               <div className="inline-note">
                 <AlertTriangle size={14} />
@@ -1494,7 +1543,8 @@ export default function Home() {
                     </Button>
                   )}
                   {["paused", "failed"].includes(run.status) &&
-                    !run.approval && (
+                    !run.approval &&
+                    run.planner !== "failed" && (
                       <Button
                         size="sm"
                         disabled={busy}

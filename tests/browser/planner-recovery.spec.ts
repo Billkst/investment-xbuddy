@@ -70,8 +70,7 @@ test("规划失败可见具体原因，重试后的计划仍等待确认（模�
   const run = createRun("比较贵州茅台和五粮液的现金流", "live");
   run.modelSelection = { source: "site" };
   await advanceRun(run, { contextLimit: 16000 });
-  run.events.find((e) => e.type === "model_fallback")!.detail =
-    "模型规划失败：模型选择了未注册的数据能力。已启用规则规划降级。";
+  run.pauseReason = "模型规划未完成：模型选择了未注册的数据能力。";
   let retried = false;
   await page.route("**/api/research", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
@@ -80,7 +79,9 @@ test("规划失败可见具体原因，重试后的计划仍等待确认（模�
       applyAction(run, "retry_plan");
       retried = true;
     } else if (body.action === "advance" && retried) {
+      run.modelSelection = { source: "rules" };
       await advanceRun(run, { contextLimit: 16000 });
+      run.modelSelection = { source: "site" };
       run.planner = "model";
     } else if (body.action !== "create" && body.action !== "advance")
       return route.continue();

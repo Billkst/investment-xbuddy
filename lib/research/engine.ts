@@ -145,6 +145,20 @@ export async function advanceRun(
     }
     if (run.status === "planning") {
       const result = await plan(run, config);
+      if (result.blocked) {
+        run.planner = "failed";
+        run.status = "failed";
+        run.intent = undefined;
+        run.steps = [];
+        run.pauseReason = result.warning;
+        run.modelRetryAt = result.retryAfterMs
+          ? new Date(Date.now() + result.retryAfterMs).toISOString()
+          : undefined;
+        event(run, "plan_failed", "AI 规划待重试", result.warning);
+        return run;
+      }
+      run.modelRetryAt = undefined;
+      run.pauseReason = undefined;
       run.intent = result.intent;
       run.planner = result.model ? "model" : "rules";
       run.planVersion++;
@@ -291,6 +305,10 @@ export function applyAction(
   payload: Record<string, unknown> = {},
 ): Run {
   if (action === "start" || action === "resume") {
+    if (run.modelRetryAt && Date.now() < Date.parse(run.modelRetryAt))
+      throw new Error(
+        `模型服务仍在等待窗口内，请约 ${Math.ceil((Date.parse(run.modelRetryAt) - Date.now()) / 1000)} 秒后重试。`,
+      );
     if (!["ready", "paused", "failed"].includes(run.status))
       throw new Error("当前状态不能开始或恢复");
     if (run.approval) throw new Error("请先处理待审批事项");
@@ -394,18 +412,24 @@ export function applyAction(
     if (run.modelSelection?.source === "rules")
       throw new Error("当前选择了规则模式，请使用模型新建研究");
     if (
-      !["ready", "needs_input"].includes(run.status) ||
-      run.planner !== "rules" ||
+      !["ready", "needs_input", "failed"].includes(run.status) ||
+      !["rules", "failed"].includes(run.planner) ||
       run.evidence.length ||
       run.steps.some((s) => s.attempts > 0)
     )
       throw new Error("只能在尚未取数的规则计划上重试模型规划");
+    if (run.modelRetryAt && Date.now() < Date.parse(run.modelRetryAt))
+      throw new Error(
+        `模型服务仍在等待窗口内，请约 ${Math.ceil((Date.parse(run.modelRetryAt) - Date.now()) / 1000)} 秒后重试。`,
+      );
     if (run.approval) throw new Error("请先处理待审批事项");
     run.status = "planning";
     run.planner = "pending";
     run.intent = undefined;
     run.steps = [];
     run.scopeApproved = false;
+    run.pauseReason = undefined;
+    run.modelRetryAt = undefined;
     event(
       run,
       "plan_retry",

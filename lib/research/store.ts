@@ -1,5 +1,11 @@
 import { env } from "cloudflare:workers";
-import { reserveModelSql, type ModelBudgetBucket } from "./model-budget.ts";
+import {
+  reserveModelSql,
+  settleModelSql,
+  unusedModelTokens,
+  modelCooldownSql,
+  type ModelBudgetBucket,
+} from "./model-budget.ts";
 import {
   type Run,
   type Memory,
@@ -46,6 +52,35 @@ export async function insertWorkspace(owner: string, expiresAt: number) {
   await db()
     .prepare("INSERT INTO research_workspaces (id,expires_at) VALUES (?,?)")
     .bind(owner, expiresAt)
+    .run();
+}
+export async function settleModelBudget(
+  buckets: string[],
+  reserved: number,
+  actual: number,
+) {
+  const unused = unusedModelTokens(reserved, actual);
+  if (unused && buckets.length)
+    await db().batch(
+      buckets.map((bucket) =>
+        db().prepare(settleModelSql).bind(unused, bucket),
+      ),
+    );
+}
+export async function modelCooldownAt(bucket: string) {
+  return (
+    await db()
+      .prepare(
+        "SELECT expires_at FROM model_usage WHERE bucket=? AND expires_at>?",
+      )
+      .bind(bucket, Date.now())
+      .first<{ expires_at: number }>()
+  )?.expires_at;
+}
+export async function setModelCooldown(bucket: string, waitMs: number) {
+  await db()
+    .prepare(modelCooldownSql)
+    .bind(bucket, Date.now() + waitMs)
     .run();
 }
 export async function clearWorkspace(owner: string) {

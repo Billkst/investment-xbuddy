@@ -15,6 +15,7 @@ import {
 import { advanceRun, applyAction } from "@/lib/research/engine";
 import { toolRegistry } from "@/lib/research/tools";
 import { modelJson } from "@/lib/research/planner";
+import { ModelRequestError } from "@/lib/research/plan-schema";
 import {
   modelRuntime,
   parseModelSelection,
@@ -37,7 +38,7 @@ function sharedLimits() {
     dailyCalls: limit("SHARED_MODEL_DAILY_CALLS", 40, 5000),
     dailyTokens: limit("SHARED_MODEL_DAILY_TOKENS", 180000, 2000000),
     minuteCalls: limit("SHARED_MODEL_MINUTE_CALLS", 6, 60),
-    workspaceDailyCalls: limit("SHARED_MODEL_WORKSPACE_DAILY_CALLS", 8, 100),
+    workspaceDailyCalls: limit("SHARED_MODEL_WORKSPACE_DAILY_CALLS", 20, 100),
   };
 }
 function configuredModel(
@@ -46,6 +47,10 @@ function configuredModel(
   credential?: unknown,
 ) {
   const config = modelRuntime(selection, credential, runtime());
+  let reservationBuckets: string[] = [];
+  const cooldownBucket = `cooldown:${selection.source === "site" ? "site" : owner}:${config.llmModel ?? "unset"}`;
+  config.onModelRateLimit = (waitMs) =>
+    store.setModelCooldown(cooldownBucket, waitMs);
   config.beforeFinancialCall = async () => {
     const day = Math.floor(Date.now() / 86400000),
       minute = Math.floor(Date.now() / 60000);
@@ -75,6 +80,13 @@ function configuredModel(
     );
   };
   config.beforeModelCall = async (tokens) => {
+    const retryAt = await store.modelCooldownAt(cooldownBucket);
+    if (retryAt)
+      throw new ModelRequestError(
+        `模型服务正在恢复，请约 ${Math.ceil((retryAt - Date.now()) / 1000)} 秒后重试。`,
+        "transient",
+        Math.max(1, retryAt - Date.now()),
+      );
     const now = Date.now(),
       day = Math.floor(now / 86400000),
       minute = Math.floor(now / 60000);
@@ -104,6 +116,12 @@ function configuredModel(
         },
       );
     await store.reserveModelBudget(buckets, tokens);
+    reservationBuckets = buckets.map((b) => b.bucket);
+  };
+  config.settleModelCall = async (reserved, actual) => {
+    const buckets = reservationBuckets;
+    reservationBuckets = [];
+    await store.settleModelBudget(buckets, reserved, actual);
   };
   return config;
 }
@@ -380,6 +398,12 @@ export async function POST(request: Request) {
           throw new Error("旧版演示研究已归档，请新建真实数据研究。");
         if (body.action === "model_rules") {
           current.modelSelection = { source: "rules" };
+          if (current.planner === "failed") {
+            current.status = "planning";
+            current.planner = "pending";
+            current.pauseReason = undefined;
+            current.modelRetryAt = undefined;
+          }
           event(current, "model_source", "用户选择规则模式继续研究");
           checkpoint(current);
           return current;

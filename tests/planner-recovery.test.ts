@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRun, type RuntimeConfig } from "../lib/research/types.ts";
+import {
+  createRun,
+  StopError,
+  type RuntimeConfig,
+} from "../lib/research/types.ts";
 import { plan } from "../lib/research/planner.ts";
 import { advanceRun, applyAction } from "../lib/research/engine.ts";
 
@@ -107,7 +111,8 @@ test("等价参数兼容不能放过冲突code、越界标的或未注册能力"
     t.mock.method(globalThis, "fetch", async () => response(c.tasks, c.focus));
     const result = await plan(createRun(goal, "live"), config);
     assert.equal(result.model, false);
-    assert.match(result.warning!, /失败/);
+    assert.equal(result.blocked, true);
+    assert.match(result.warning!, /未完成/);
     t.mock.restoreAll();
   }
 });
@@ -141,11 +146,11 @@ test("显式重试保留预算与失败记录，新模型计划需重新确认",
   t.mock.method(
     globalThis,
     "fetch",
-    async () => new Response("unavailable", { status: 503 }),
+    async () => new Response("unauthorized", { status: 401 }),
   );
   const run = createRun(goal, "live");
   await advanceRun(run, config);
-  assert.equal(run.planner, "rules");
+  assert.equal(run.planner, "failed");
   const tokens = run.usage.tokens;
   applyAction(run, "retry_plan");
   assert.equal(run.status, "planning");
@@ -160,7 +165,7 @@ test("显式重试保留预算与失败记录，新模型计划需重新确认",
   assert.equal(run.status, "ready");
   assert.equal(run.planner, "model");
   assert.equal(run.usage.calls, 2);
-  assert.ok(run.events.some((e) => e.type === "model_fallback"));
+  assert.ok(run.events.some((e) => e.type === "plan_failed"));
   assert.ok(run.events.some((e) => e.type === "plan_retry"));
   assert.equal(run.evidence.length, 0);
 });
@@ -177,6 +182,159 @@ test("重试不能重置已有取数、规则选择或已耗尽预算", async ()
   run.usage.calls = 1;
   applyAction(run, "retry_plan");
   await advanceRun(run, config);
-  assert.equal(run.planner, "rules");
+  assert.equal(run.planner, "failed");
   assert.equal(run.usage.calls, 1);
+});
+
+test("严格结构化输出约束工具和focus，语义错误最多自动修复一次", async (t) => {
+  let calls = 0;
+  t.mock.method(
+    globalThis,
+    "fetch",
+    async (_url: unknown, options?: RequestInit) => {
+      const body = JSON.parse(String(options?.body));
+      assert.equal(body.response_format.type, "json_schema");
+      assert.equal(body.response_format.json_schema.strict, true);
+      assert.equal(
+        body.response_format.json_schema.schema.additionalProperties,
+        false,
+      );
+      assert.ok(
+        body.response_format.json_schema.schema.properties.tasks.items.properties.tool.enum.includes(
+          "finance.cashflow",
+        ),
+      );
+      if (++calls === 1)
+        return response([{ tool: "trade.buy", code: "600519.SH" }]);
+      assert.match(
+        JSON.parse(body.messages[1].content).repair.reason,
+        /未注册/,
+      );
+      return response([{ tool: "finance.cashflow", code: "600519.SH" }]);
+    },
+  );
+  const run = createRun(goal, "live");
+  run.modelSelection = { source: "site" };
+  const result = await plan(run, {
+    ...config,
+    llmBaseUrl: "https://api.groq.com/openai/v1",
+    llmModel: "openai/gpt-oss-120b",
+  });
+  assert.equal(result.model, true);
+  assert.equal(run.usage.calls, 2);
+  assert.equal(run.events.filter((e) => e.type === "plan_repair").length, 1);
+  assert.ok(!run.events.some((e) => e.type === "model_fallback"));
+});
+
+test("截断响应明确识别并修复，不会把规则任务冒充模型任务", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () =>
+    ++calls === 1
+      ? Response.json({
+          choices: [
+            { finish_reason: "length", message: { content: '{"tasks":' } },
+          ],
+        })
+      : response([]),
+  );
+  const run = createRun(goal, "live");
+  const result = await plan(run, config);
+  assert.equal(result.blocked, true);
+  assert.deepEqual(result.steps, []);
+  assert.equal(calls, 2);
+  assert.match(
+    run.events.find((e) => e.type === "plan_repair")!.detail!,
+    /截断/,
+  );
+});
+
+test("供应商JSON校验400可修复，普通参数400不盲目重试", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () =>
+    ++calls === 1
+      ? Response.json(
+          {
+            error: {
+              code: "json_validate_failed",
+              message: "jsonschema: '/market' does not validate",
+            },
+          },
+          { status: 400 },
+        )
+      : response([{ tool: "finance.cashflow", code: "600519.SH" }]),
+  );
+  const result = await plan(createRun(goal, "live"), config);
+  assert.equal(result.model, true);
+  assert.equal(calls, 2);
+  t.mock.restoreAll();
+  calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return Response.json(
+      { error: { code: "invalid_request_error" } },
+      { status: 400 },
+    );
+  });
+  assert.equal((await plan(createRun(goal, "live"), config)).blocked, true);
+  assert.equal(calls, 1);
+});
+
+test("长时间429不盲目重试，保留等待时点且拒绝提前恢复", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return new Response("limited", {
+      status: 429,
+      headers: { "retry-after": "60" },
+    });
+  });
+  const run = createRun(goal, "live");
+  await advanceRun(run, config);
+  assert.equal(calls, 1);
+  assert.equal(run.planner, "failed");
+  assert.ok(Date.parse(run.modelRetryAt!) > Date.now() + 50000);
+  assert.throws(() => applyAction(run, "retry_plan"), /等待窗口/);
+  assert.throws(() => applyAction(run, "resume"), /等待窗口/);
+  assert.equal(run.steps.length, 0);
+});
+
+test("缺模型配置和日额度不足不消耗请求、不自动切换规则", async (t) => {
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    requests++;
+    return response([]);
+  });
+  for (const runtime of [
+    { contextLimit: 16000 },
+    {
+      ...config,
+      beforeModelCall: async () => {
+        throw new Error("本次模型调用已达到工作台或站点的额度限制");
+      },
+    },
+  ]) {
+    const run = createRun(goal, "live");
+    run.modelSelection = { source: "site" };
+    await advanceRun(run, runtime);
+    assert.equal(run.planner, "failed");
+    assert.equal(run.usage.calls, 0);
+  }
+  assert.equal(requests, 0);
+});
+
+test("自动修复前用户暂停会阻止第二次调用", async (t) => {
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls++;
+    return response([], ["bad-focus"]);
+  });
+  const run = createRun(goal, "live");
+  await advanceRun(run, {
+    ...config,
+    onProgress: async (r) => {
+      if (r.events.some((e) => e.type === "plan_repair")) throw new StopError();
+    },
+  });
+  assert.equal(run.status, "paused");
+  assert.equal(calls, 1);
 });

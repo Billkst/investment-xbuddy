@@ -342,7 +342,7 @@ test("缺失时点不作为已验证事实或模型引用", async (t) => {
     0,
   );
 });
-test("模型输出非法日期、未注册能力时安全降级", async (t) => {
+test("模型输出非法日期、未注册能力时修复失败后停止规划", async (t) => {
   for (const overrides of [{ start: "2010-02-30" }, { focus: ["trade.buy"] }]) {
     t.mock.method(globalThis, "fetch", async () =>
       mockResponse({
@@ -371,7 +371,9 @@ test("模型输出非法日期、未注册能力时安全降级", async (t) => {
       llmModel: "test",
     });
     assert.equal(result.model, false);
-    assert.match(result.warning!, /失败/);
+    assert.equal(result.blocked, true);
+    assert.equal(result.steps.length, 0);
+    assert.match(result.warning!, /未完成/);
     t.mock.restoreAll();
   }
 });
@@ -485,7 +487,7 @@ test("上海截止日不会纳入次日披露的财报", async (t) => {
   const original = profit.raw as { data: { item: Record<string, unknown>[] } };
   assert.equal(original.data.item[0].net_profit, 80);
 });
-test("模型服务异常透明降级并保留已尝试预算", async (t) => {
+test("模型服务持续异常时保留已尝试预算，等待用户重试", async (t) => {
   t.mock.method(
     globalThis,
     "fetch",
@@ -498,11 +500,11 @@ test("模型服务异常透明降级并保留已尝试预算", async (t) => {
     llmBaseUrl: "https://example.test/v1",
     llmModel: "test",
   });
-  assert.equal(r.status, "ready");
-  assert.equal(r.planner, "rules");
-  assert.equal(r.usage.calls, 1);
+  assert.equal(r.status, "failed");
+  assert.equal(r.planner, "failed");
+  assert.equal(r.usage.calls, 2);
   assert.ok(r.usage.tokens > 0);
-  assert.ok(r.events.some((e) => e.type === "model_fallback"));
+  assert.ok(r.events.some((e) => e.type === "plan_failed"));
 });
 test("历史行情只用区间内价格，忽略返回的最新快照", async (t) => {
   t.mock.method(globalThis, "fetch", async () =>

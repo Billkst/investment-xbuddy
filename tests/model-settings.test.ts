@@ -8,7 +8,12 @@ import {
   modelRequestOptions,
   modelRuntime,
 } from "../lib/research/model-settings.ts";
-import { reserveModelSql } from "../lib/research/model-budget.ts";
+import {
+  reserveModelSql,
+  settleModelSql,
+  unusedModelTokens,
+  modelCooldownSql,
+} from "../lib/research/model-budget.ts";
 import { modelJson } from "../lib/research/planner.ts";
 import { createRun } from "../lib/research/types.ts";
 import {
@@ -258,4 +263,36 @@ test("国产模型使用各自官方地址与 JSON 参数，Kimi 不注入不兼
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test("unused token reservations are refunded atomically without refunding calls or other requests", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(
+    "CREATE TABLE model_usage (bucket TEXT PRIMARY KEY,calls INTEGER,tokens INTEGER,expires_at INTEGER,call_limit INTEGER,token_limit INTEGER)",
+  );
+  db.prepare(reserveModelSql).run("shared", 7000, 1, 10, 20000);
+  db.prepare(reserveModelSql).run("shared", 5000, 1, 10, 20000);
+  db.prepare(settleModelSql).run(unusedModelTokens(7000, 2300), "shared");
+  assert.deepEqual(
+    { ...db.prepare("SELECT calls,tokens FROM model_usage").get()! },
+    { calls: 2, tokens: 7300 },
+  );
+  db.prepare(settleModelSql).run(unusedModelTokens(5000, 1200), "shared");
+  assert.deepEqual(
+    { ...db.prepare("SELECT calls,tokens FROM model_usage").get()! },
+    { calls: 2, tokens: 3500 },
+  );
+  assert.equal(unusedModelTokens(7000, -1), 0);
+  assert.equal(unusedModelTokens(7000, 8000), 0);
+  db.prepare(modelCooldownSql).run("cooldown:site", 90000);
+  db.prepare(modelCooldownSql).run("cooldown:site", 80000);
+  assert.equal(
+    db
+      .prepare(
+        "SELECT expires_at FROM model_usage WHERE bucket='cooldown:site'",
+      )
+      .get()?.expires_at,
+    90000,
+  );
+  db.close();
 });
