@@ -94,7 +94,6 @@ import type {
   ResearchEvent,
 } from "@/lib/research/types";
 import { toolRegistry } from "@/lib/research/tools";
-import { GuestWorkspace } from "@/lib/research/guest";
 
 type Brief = {
   id: string;
@@ -106,8 +105,7 @@ type Brief = {
   completed: number;
 };
 type Bootstrap = {
-  authenticated: boolean;
-  user: { name: string } | null;
+  access: "anonymous";
   runs: Brief[];
   memories: Memory[];
   config: {
@@ -186,38 +184,25 @@ async function serverApi<
     });
   return data;
 }
-let guestAccess: boolean | null = null;
-let guestWorkspace: GuestWorkspace | undefined;
-function guests() {
-  if (!guestWorkspace) {
-    try {
-      guestWorkspace = new GuestWorkspace(window.sessionStorage);
-    } catch {
-      throw new Error("浏览器禁止临时存储，请允许本站存储后重试。");
-    }
-  }
-  return guestWorkspace;
-}
+let bootstrapRequest: Promise<Bootstrap> | null = null;
 async function api<T = { run: Run; busy?: boolean; stopRequested?: boolean }>(
   body?: Record<string, unknown>,
   id?: string,
 ): Promise<T> {
+  // Coalesce initial reads so React effects cannot create competing cookies.
   if (!body && !id) {
-    const data = await serverApi<Bootstrap>();
-    guestAccess = !data.authenticated;
-    return {
-      ...data,
-      runs: guestAccess ? guests().listRuns() : data.runs,
-    } as T;
+    if (!bootstrapRequest)
+      bootstrapRequest = serverApi<Bootstrap>().finally(() => {
+        bootstrapRequest = null;
+      });
+    return (await bootstrapRequest) as T;
   }
-  if (guestAccess === null) throw new Error("工作台正在准备，请稍后重试。");
-  if (guestAccess) return (await guests().request(body, id)) as T;
   return serverApi<T>(body, id);
 }
 export default function Home() {
   const [boot, setBoot] = useState<Bootstrap | null>(null),
     [goal, setGoal] = useState(""),
-    [mode, setMode] = useState<Mode>("live"),
+    [mode, setMode] = useState<Mode>("demo"),
     [budget, setBudget] = useState("10"),
     [fault, setFault] = useState<Run["fault"]>("none"),
     [run, setRun] = useState<Run | null>(null),
@@ -236,7 +221,6 @@ export default function Home() {
   const refresh = useCallback(async () => {
     const data = await api<Bootstrap>();
     setBoot(data);
-    if (!data.authenticated) setMode("demo");
     return data as Bootstrap;
   }, []);
   useEffect(() => {
@@ -254,7 +238,7 @@ export default function Home() {
       const draft = sessionStorage.getItem("xbuddy-draft");
       if (draft) setGoal(draft);
     } catch {
-      /* Draft recovery is optional; guest storage reports its own error. */
+      /* Optional draft storage must not prevent server-backed research. */
     }
   }, [refresh]);
   useEffect(() => {
@@ -333,9 +317,6 @@ export default function Home() {
         return;
       }
       if (!boot) return;
-      if (!boot.authenticated && inputMode === "live") {
-        throw new Error("免登录体验使用构造数据；真实数据研究请先登录。");
-      }
       generation.current++;
       setBusy(true);
       setError("");
@@ -344,7 +325,7 @@ export default function Home() {
         const data = await api({
           action: "create",
           goal: text,
-          mode: boot.authenticated ? (inputMode ?? mode) : "demo",
+          mode: inputMode ?? mode,
           maxCalls: Number(budget),
           fault,
         });
@@ -420,16 +401,24 @@ export default function Home() {
     setStopRequested(false);
     setGoal("");
   };
-  const clearGuest = async () => {
+  const clearWorkspace = async () => {
+    if (
+      !window.confirm(
+        "将删除当前工作台的全部研究记录与研究记忆。请先导出需要的报告，确定清空吗？",
+      )
+    )
+      return;
     generation.current++;
     setBusy(true);
     try {
-      await guests().request({ action: "guest_clear" });
-      sessionStorage.removeItem("xbuddy-draft");
+      await api({ action: "workspace_clear" });
+      try {
+        sessionStorage.removeItem("xbuddy-draft");
+      } catch {}
       newResearch();
       setSelectedEvidence(null);
       await refresh();
-      toast.success("临时研究记录已清除");
+      toast.success("记录与记忆已清空，新的免登录工作台已就绪");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -620,12 +609,8 @@ export default function Home() {
           <div className="profile">
             <div className="avatar">研</div>
             <div>
-              {boot?.authenticated ? "个人研究空间" : "免登录临时体验"}
-              <small>
-                {boot?.authenticated
-                  ? "研究记录已隔离保存"
-                  : "记录仅保存在当前标签页"}
-              </small>
+              免登录研究工作台
+              <small>本浏览器的记录与偏好自动保存</small>
             </div>
           </div>
         </SidebarFooter>
@@ -647,22 +632,12 @@ export default function Home() {
           <div className="topbar-actions">
             <span className="private-label">
               <ShieldCheck size={14} />
-              {boot?.authenticated ? "个人空间" : "访客体验"}
+              免登录使用
             </span>
-            {boot && !boot.authenticated ? (
-              <a
-                href="/signin-with-chatgpt?return_to=/"
-                target="_top"
-                className="login-link"
-              >
-                登录并保存研究
-              </a>
-            ) : (
-              <span className="mode-pill neutral">
-                <Database size={13} />
-                持久化研究
-              </span>
-            )}
+            <span className="mode-pill neutral">
+              <BrainCircuit size={13} />
+              {boot?.config.model ? "AI 模型已配置" : "AI 未接入 · 规则运行"}
+            </span>
           </div>
         </header>
         {error && (
@@ -681,30 +656,28 @@ export default function Home() {
             >
               重试
             </Button>
-            {guestAccess && !boot && (
-              <Button variant="outline" size="sm" onClick={clearGuest}>
-                清除临时记录
-              </Button>
-            )}
           </div>
         )}
-        {boot && !boot.authenticated && (
-          <div className="guest-banner">
-            <FlaskConical size={19} />
+        {boot && (
+          <div className="workspace-notice">
+            <Database size={19} />
             <div>
-              <strong>免登录，直接开始研究体验</strong>
+              <strong>打开即用，研究记录与记忆自动保存</strong>
               <p>
-                使用规则规划与构造数据，支持计划、审批、证据和报告导出。记录仅保存在当前标签页，刷新可继续；登录后不会自动同步。
+                同一浏览器再次打开可继续研究。更换设备或清除本站 Cookie
+                后无法恢复原工作台，请导出需要的报告。
               </p>
             </div>
             <Button
               variant="ghost"
               size="sm"
-              disabled={busy}
-              onClick={clearGuest}
+              disabled={
+                busy || (!!run && ["planning", "running"].includes(run.status))
+              }
+              onClick={clearWorkspace}
             >
               <Trash2 size={14} />
-              清除临时记录
+              清空工作台
             </Button>
           </div>
         )}
@@ -751,9 +724,7 @@ export default function Home() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="live" disabled={!boot?.authenticated}>
-                        真实数据{!boot?.authenticated ? "（登录后）" : ""}
-                      </SelectItem>
+                      <SelectItem value="live">真实数据</SelectItem>
                       <SelectItem value="demo">构造数据演示</SelectItem>
                     </SelectContent>
                   </Select>
@@ -784,7 +755,7 @@ export default function Home() {
               )}
               <span>
                 {mode === "demo"
-                  ? "演示数值均为构造数据，不代表真实证券；可完整体验财报、审批与恢复流程。"
+                  ? `演示数值均为构造数据，不代表真实证券。${boot?.config.model ? "规划可使用已配置模型。" : "当前未接入 AI，计划由规则生成。"}`
                   : `行情优先使用扶摇，未配置时使用腾讯公开行情。${boot?.config.model ? "" : "当前模型未配置，将使用规则规划降级。"}`}
               </span>
             </div>
@@ -840,7 +811,7 @@ export default function Home() {
                   className="sample-card"
                   onClick={() => {
                     setGoal(s.text);
-                    setMode(boot?.authenticated ? s.mode : "demo");
+                    setMode(s.mode);
                   }}
                 >
                   <span className="sample-icon">
@@ -913,7 +884,7 @@ export default function Home() {
                   ? "规划中"
                   : run.planner === "model"
                     ? "模型规划"
-                    : "规则规划 · 降级"}
+                    : "规则规划 · 无模型参与"}
               </span>
               {run.intent && (
                 <span className="muted-tag">
@@ -1436,23 +1407,9 @@ export default function Home() {
             <p className="page-intro">
               明确保存的偏好会在新研究中读取，你可以随时删除。
             </p>
-            {boot && !boot.authenticated && (
-              <div className="inline-note">
-                <BookOpen size={16} />
-                长期偏好保存在个人账号中。
-                <a
-                  href="/signin-with-chatgpt?return_to=/"
-                  target="_top"
-                  className="login-link"
-                >
-                  登录后使用研究记忆
-                </a>
-              </div>
-            )}
             <form onSubmit={saveMemory} className="memory-form">
               <label htmlFor="memory">保存研究偏好</label>
               <Textarea
-                disabled={!boot?.authenticated}
                 id="memory"
                 value={memoryText}
                 maxLength={300}
@@ -1461,9 +1418,7 @@ export default function Home() {
               />
               <div>
                 <span>只保存你主动提供的内容</span>
-                <Button
-                  disabled={busy || !memoryText.trim() || !boot?.authenticated}
-                >
+                <Button disabled={busy || !memoryText.trim() || !boot}>
                   <Plus size={14} />
                   保存偏好
                 </Button>
@@ -1505,12 +1460,12 @@ export default function Home() {
             <p className="page-intro">
               计划只能使用已注册的工具。服务未配置或数据不可用时，会保留明确的缺口。
             </p>
-            {boot && !boot.authenticated && (
-              <div className="inline-note">
-                <FlaskConical size={16} />
-                当前临时体验在浏览器中运行，不调用以下真实服务。登录后可使用已配置的数据能力。
-              </div>
-            )}
+            <div className="inline-note">
+              <BrainCircuit size={16} />
+              {boot?.config.model
+                ? "已配置模型服务；实际调用结果和降级原因会记录在研究运行记录中。"
+                : "AI 尚未接入：目标识别与计划由规则代码生成，报告由证据模板与确定性计算整理。需要配置服务地址、模型名称与 API key 后，才会调用真实大模型。"}
+            </div>
             <div className="connection-grid">
               <Connection
                 title="规划与解释模型"
@@ -1518,7 +1473,7 @@ export default function Home() {
                 text={
                   boot?.config.model
                     ? (boot.config.modelName ?? "已配置")
-                    : "未配置，使用规则规划降级"
+                    : "未配置 API key，当前没有真实大模型参与"
                 }
               />
               <Connection

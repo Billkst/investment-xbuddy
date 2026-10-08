@@ -2307,8 +2307,8 @@ button:focus-visible {
     font-size: 1rem;
   }
 }
-/* Temporary, account-free workspace notice. */
-.guest-banner {
+/* Account-free workspace notice. */
+.workspace-notice {
   display: flex;
   align-items: flex-start;
   gap: 12px;
@@ -2319,34 +2319,34 @@ button:focus-visible {
   color: #264e81;
   background: #edf4ff;
 }
-.guest-banner > svg {
+.workspace-notice > svg {
   flex-shrink: 0;
   margin-top: 3px;
 }
-.guest-banner > div {
+.workspace-notice > div {
   flex: 1;
 }
-.guest-banner strong {
+.workspace-notice strong {
   font-size: 14px;
 }
-.guest-banner p {
+.workspace-notice p {
   font-size: 14px;
   line-height: 1.7;
   margin-top: 4px;
 }
-.guest-banner button {
+.workspace-notice button {
   flex-shrink: 0;
 }
 @media (max-width: 640px) {
-  .guest-banner {
+  .workspace-notice {
     margin: 14px 16px 0;
     padding: 14px;
     flex-wrap: wrap;
   }
-  .guest-banner > div {
+  .workspace-notice > div {
     min-width: 180px;
   }
-  .guest-banner button {
+  .workspace-notice button {
     margin-left: 28px;
   }
 }

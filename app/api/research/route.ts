@@ -1,5 +1,9 @@
 import { env } from "cloudflare:workers";
-import { getChatGPTUser } from "@/app/chatgpt-auth";
+import {
+  newWorkspace,
+  readWorkspaceToken,
+  workspaceOwner,
+} from "@/lib/research/workspace";
 import {
   createRun,
   type RuntimeConfig,
@@ -21,12 +25,14 @@ function runtime(): RuntimeConfig {
     contextLimit: Number(read("CONTEXT_LIMIT")) || 7000,
   };
 }
-function json(data: unknown, status = 200) {
+function json(data: unknown, status = 200, cookie?: string) {
   return Response.json(data, {
     status,
     headers: {
       "Cache-Control": "private, no-store",
       "X-Content-Type-Options": "nosniff",
+      Vary: "Cookie",
+      ...(cookie ? { "Set-Cookie": cookie } : {}),
     },
   });
 }
@@ -45,29 +51,56 @@ function failure(error: unknown) {
     );
   return json({ error: message.slice(0, 350) }, 400);
 }
+async function ownerFor(request: Request): Promise<string | null> {
+  const token = readWorkspaceToken(request);
+  if (!token) return null;
+  const owner = await workspaceOwner(token);
+  return (await store.hasWorkspace(owner)) ? owner : null;
+}
+function sessionRequired() {
+  return json(
+    {
+      error:
+        "工作台会话尚未建立或已清空。请刷新页面，并允许本站使用 Cookie；也可在独立浏览器窗口打开站点。",
+    },
+    428,
+  );
+}
 export async function GET(request: Request) {
   try {
+    if (request.headers.get("Sec-Fetch-Site") === "cross-site")
+      return json({ error: "不允许跨站读取工作台" }, 403);
     const config = runtime();
-    const user = await getChatGPTUser();
+    let owner = await ownerFor(request);
     const id = new URL(request.url).searchParams.get("id");
     if (id) {
-      if (!user) return json({ error: "请先登录以访问个人研究" }, 401);
-      return json(await store.getRun(user.userId, id));
+      if (!owner) return sessionRequired();
+      return json(await store.getRun(owner, id));
     }
-    return json({
-      authenticated: !!user,
-      user: user ? { name: user.displayName } : null,
-      runs: user ? await store.listRuns(user.userId) : [],
-      memories: user ? await store.listMemories(user.userId) : [],
-      config: {
-        model: !!(config.llmApiKey && config.llmBaseUrl && config.llmModel),
-        modelName: config.llmModel ?? null,
-        fuyao: !!config.fuyaoApiKey,
-        publicMarket: true,
-        contextLimit: config.contextLimit,
+    let cookie: string | undefined;
+    if (!owner) {
+      const workspace = await newWorkspace(request.url);
+      await store.insertWorkspace(workspace.owner, workspace.expiresAt);
+      owner = workspace.owner;
+      cookie = workspace.cookie;
+    }
+    return json(
+      {
+        access: "anonymous",
+        runs: await store.listRuns(owner),
+        memories: await store.listMemories(owner),
+        config: {
+          model: !!(config.llmApiKey && config.llmBaseUrl && config.llmModel),
+          modelName: config.llmModel ?? null,
+          fuyao: !!config.fuyaoApiKey,
+          publicMarket: true,
+          contextLimit: config.contextLimit,
+        },
+        tools: toolRegistry,
       },
-      tools: toolRegistry,
-    });
+      200,
+      cookie,
+    );
   } catch (e) {
     return failure(e);
   }
@@ -75,15 +108,24 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const origin = request.headers.get("Origin");
-    if (origin && origin !== new URL(request.url).origin)
+    if (
+      request.headers.get("Sec-Fetch-Site") === "cross-site" ||
+      (origin && origin !== new URL(request.url).origin)
+    )
       return json({ error: "不允许跨站写入" }, 403);
     if (!request.headers.get("Content-Type")?.includes("application/json"))
       return json({ error: "仅接受 JSON 请求" }, 415);
-    const user = await getChatGPTUser();
-    if (!user) return json({ error: "请先登录以保存和执行个人研究" }, 401);
+    const owner = await ownerFor(request);
+    if (!owner) return sessionRequired();
     const text = await request.text();
     if (text.length > 12000) return json({ error: "请求内容过长" }, 413);
     const body = JSON.parse(text) as Record<string, unknown>;
+    if (body.action === "workspace_clear") {
+      await store.clearWorkspace(owner);
+      const workspace = await newWorkspace(request.url);
+      await store.insertWorkspace(workspace.owner, workspace.expiresAt);
+      return json({ ok: true }, 200, workspace.cookie);
+    }
     if (body.action === "create") {
       const goal = typeof body.goal === "string" ? body.goal.trim() : "";
       if (goal.length < 4 || goal.length > 2000)
@@ -103,38 +145,37 @@ export async function POST(request: Request) {
       const run = createRun(
         goal,
         body.mode as Mode,
-        await store.listMemories(user.userId),
+        await store.listMemories(owner),
         { maxCalls, fault },
       );
-      await store.insertRun(user.userId, run);
+      await store.insertRun(owner, run);
       return json({ run }, 201);
     }
     if (body.action === "memory_add") {
       const value = typeof body.text === "string" ? body.text.trim() : "";
       if (!value || value.length > 300) throw new Error("偏好需为1至300字");
-      if (body.sourceRunId)
-        await store.getRun(user.userId, String(body.sourceRunId));
+      if (body.sourceRunId) await store.getRun(owner, String(body.sourceRunId));
       return json({
         memory: await store.addMemory(
-          user.userId,
+          owner,
           value,
           typeof body.sourceRunId === "string" ? body.sourceRunId : undefined,
         ),
       });
     }
     if (body.action === "memory_delete") {
-      await store.deleteMemory(user.userId, String(body.memoryId ?? ""));
+      await store.deleteMemory(owner, String(body.memoryId ?? ""));
       return json({ ok: true });
     }
     const id = String(body.id ?? "");
     if (!/^run_[a-f0-9]{16}$/.test(id)) throw new Error("无效的研究ID");
-    if (body.action === "pause" && (await store.requestStop(user.userId, id)))
+    if (body.action === "pause" && (await store.requestStop(owner, id)))
       return json({
-        ...(await store.getRun(user.userId, id)),
+        ...(await store.getRun(owner, id)),
         stopRequested: true,
       });
     const run = await store.withRunLock(
-      user.userId,
+      owner,
       id,
       async (current, onProgress) =>
         body.action === "advance"

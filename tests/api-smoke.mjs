@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:5173";
 const checks = [];
-const login = await fetch(base + "/signin-with-chatgpt?return_to=/", {
-  redirect: "manual",
-});
-const cookie = login.headers.get("set-cookie")?.split(";")[0];
-assert.ok(cookie, "local sign-in cookie");
-async function api(body, id, auth = true) {
+const initial = await fetch(base + "/api/research");
+const cookie = initial.headers.get("set-cookie")?.split(";")[0];
+assert.ok(cookie, "anonymous workspace cookie");
+assert.match(initial.headers.get("set-cookie"), /HttpOnly/);
+assert.match(initial.headers.get("set-cookie"), /SameSite=Lax/);
+async function api(body, id, session = cookie) {
   const r = await fetch(base + "/api/research" + (id ? "?id=" + id : ""), {
     ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
     headers: {
-      ...(auth ? { Cookie: cookie } : {}),
+      ...(session ? { Cookie: session } : {}),
       ...(body ? { "Content-Type": "application/json", Origin: base } : {}),
     },
   });
@@ -19,17 +19,18 @@ async function api(body, id, auth = true) {
   return data;
 }
 const boot = await api();
-assert.equal(boot.authenticated, true);
-checks.push("authenticated bootstrap");
+assert.equal(boot.access, "anonymous");
+assert.ok(!("user" in boot) && !("owner" in boot));
+checks.push("anonymous bootstrap and HttpOnly session without account");
 await assert.rejects(
   api(
     { action: "create", goal: "茅台走势测试", mode: "demo" },
     undefined,
     false,
   ),
-  (e) => e.status === 401,
+  (e) => e.status === 428,
 );
-checks.push("unauthenticated writes rejected");
+checks.push("requests without a workspace capability rejected");
 const cross = await fetch(base + "/api/research", {
   method: "POST",
   headers: {
@@ -124,6 +125,89 @@ assert.equal(
   1,
 );
 checks.push("concurrent advance does not duplicate step");
+const second = await fetch(base + "/api/research");
+const secondCookie = second.headers.get("set-cookie").split(";")[0];
+assert.notEqual(secondCookie, cookie);
+assert.deepEqual((await api(undefined, undefined, secondCookie)).runs, []);
+for (const body of [
+  undefined,
+  { action: "advance", id: run.id },
+  { action: "pause", id: run.id },
+  { action: "memory_add", sourceRunId: run.id, text: "foreign" },
+]) {
+  await assert.rejects(api(body, body ? undefined : run.id, secondCookie));
+}
+checks.push("separate browsers cannot read or mutate another workspace");
+const foreignMemory = (
+  await api(
+    { action: "memory_add", text: "另一浏览器的研究偏好" },
+    undefined,
+    secondCookie,
+  )
+).memory;
+await api({ action: "memory_delete", memoryId: foreignMemory.id });
+assert.ok(
+  (await api(undefined, undefined, secondCookie)).memories.some(
+    (m) => m.id === foreignMemory.id,
+  ),
+);
+checks.push("memory ownership enforced without accounts");
+const forged = await fetch(base + "/api/research", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Origin: base,
+    "oai-authenticated-user-id": "forged-user",
+    "oai-authenticated-user-email": "fake@example.invalid",
+  },
+  body: JSON.stringify({
+    action: "create",
+    goal: "研究贵州茅台",
+    mode: "demo",
+  }),
+});
+assert.equal(forged.status, 428);
+for (const invalid of [
+  cookie + "; " + cookie,
+  "xbuddy-workspace-dev=invalid",
+  "xbuddy-workspace-dev=" + "a".repeat(64),
+]) {
+  await assert.rejects(
+    api({ action: "memory_add", text: "invalid" }, undefined, invalid),
+    (e) => e.status === 428,
+  );
+}
+checks.push(
+  "forged account headers and invalid workspace cookies confer no access",
+);
+const live = (
+  await api({ action: "create", goal: "沪深300近一月走势", mode: "live" })
+).run;
+assert.equal(live.mode, "live");
+checks.push(
+  "live mode unlocked without login; provider availability is independent",
+);
+const clearing = await fetch(base + "/api/research", {
+  method: "POST",
+  headers: { Cookie: cookie, Origin: base, "Content-Type": "application/json" },
+  body: JSON.stringify({ action: "workspace_clear" }),
+});
+assert.equal(clearing.status, 200);
+const rotated = clearing.headers.get("set-cookie").split(";")[0];
+assert.notEqual(rotated, cookie);
+assert.deepEqual((await api(undefined, undefined, rotated)).runs, []);
+assert.deepEqual((await api(undefined, undefined, rotated)).memories, []);
+await assert.rejects(api(undefined, run.id, rotated));
+await assert.rejects(
+  api({ action: "memory_add", text: "replay" }, undefined, cookie),
+  (e) => e.status === 428,
+);
+assert.ok(
+  (await api(undefined, undefined, secondCookie)).memories.some(
+    (m) => m.id === foreignMemory.id,
+  ),
+);
+checks.push("clear revokes old capability and keeps other visitors intact");
 const result = {
   passed: checks.length,
   checks,

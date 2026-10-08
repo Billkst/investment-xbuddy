@@ -1,4 +1,8 @@
 import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+export const researchWorkspaces = sqliteTable("research_workspaces", {
+  id: text("id").primaryKey(),
+  expiresAt: integer("expires_at").notNull(),
+});
 export const researchRuns = sqliteTable(
   "research_runs",
   {

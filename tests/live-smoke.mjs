@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:5173";
-const login = await fetch(base + "/signin-with-chatgpt?return_to=/", {
-  redirect: "manual",
-});
-const cookie = login.headers.get("set-cookie").split(";")[0];
+const initial = await fetch(base + "/api/research");
+const cookie = initial.headers.get("set-cookie").split(";")[0];
 async function api(body) {
   const response = await fetch(base + "/api/research", {
     method: "POST",

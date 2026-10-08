@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-test("首页、登录、自由目标、审批、报告、证据与刷新恢复", async ({ page }) => {
+test("免登录首页、自由目标、审批、报告、证据与刷新恢复", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto("/");
@@ -11,8 +11,8 @@ test("首页、登录、自由目标、审批、报告、证据与刷新恢复",
     path: "test-results/home-desktop.png",
     fullPage: true,
   });
-  await page.getByRole("link", { name: "登录并保存研究" }).click();
-  await expect(page.locator(".profile")).toContainText("个人研究空间");
+  await expect(page.getByRole("link", { name: /登录/ })).toHaveCount(0);
+  await expect(page.locator(".profile")).toContainText("免登录研究工作台");
   await page.getByRole("button", { name: /完整流程 · 构造数据/ }).click();
   await expect(page.getByRole("textbox", { name: "研究目标" })).toHaveValue(
     /现金流/,
@@ -64,7 +64,7 @@ test("首页、登录、自由目标、审批、报告、证据与刷新恢复",
   expect(errors).toEqual([]);
 });
 test("长期记忆可保存和删除", async ({ page }) => {
-  await page.goto("/signin-with-chatgpt?return_to=/");
+  await page.goto("/");
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   await page.getByRole("button", { name: "研究记忆", exact: true }).click();
   await page

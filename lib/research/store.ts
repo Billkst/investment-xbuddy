@@ -12,6 +12,28 @@ function db() {
   if (!env.DB) throw new Error("持久化服务不可用，请检查数据库绑定与迁移");
   return env.DB;
 }
+export async function hasWorkspace(owner: string) {
+  return !!(await db()
+    .prepare("SELECT id FROM research_workspaces WHERE id=? AND expires_at>?")
+    .bind(owner, Date.now())
+    .first());
+}
+export async function insertWorkspace(owner: string, expiresAt: number) {
+  await db()
+    .prepare("INSERT INTO research_workspaces (id,expires_at) VALUES (?,?)")
+    .bind(owner, expiresAt)
+    .run();
+}
+export async function clearWorkspace(owner: string) {
+  // Revocation and data deletion are one transaction; stale browser requests
+  // cannot re-create data in the cleared workspace.
+  await db().batch([
+    db().prepare("DELETE FROM research_workspaces WHERE id=?").bind(owner),
+    db().prepare("DELETE FROM research_checkpoints WHERE owner=?").bind(owner),
+    db().prepare("DELETE FROM research_runs WHERE owner=?").bind(owner),
+    db().prepare("DELETE FROM research_memories WHERE owner=?").bind(owner),
+  ]);
+}
 export async function listRuns(owner: string) {
   const r = await db()
     .prepare(
@@ -46,12 +68,25 @@ export async function getRun(owner: string, id: string) {
   };
 }
 export async function insertRun(owner: string, run: Run) {
-  await db()
+  const result = await db()
     .prepare(
-      "INSERT INTO research_runs (id,owner,state,created_at,updated_at) VALUES (?,?,?,?,?)",
+      "INSERT INTO research_runs (id,owner,state,created_at,updated_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM research_workspaces WHERE id=? AND expires_at>?) AND (SELECT COUNT(*) FROM research_runs WHERE owner=?) < 50",
     )
-    .bind(run.id, owner, JSON.stringify(run), run.createdAt, run.updatedAt)
+    .bind(
+      run.id,
+      owner,
+      JSON.stringify(run),
+      run.createdAt,
+      run.updatedAt,
+      owner,
+      Date.now(),
+      owner,
+    )
     .run();
+  if (!result.meta.changes)
+    throw new Error(
+      "工作台已失效或达到50条研究上限，请导出需要的报告后清空工作台。",
+    );
 }
 export async function withRunLock(
   owner: string,
@@ -173,12 +208,23 @@ export async function addMemory(
   if ((await listMemories(owner)).length >= 20)
     throw new Error("最多保存20条偏好，请先删除不再使用的内容");
   const memory = { id: uid("mem"), text, createdAt: now(), sourceRunId };
-  await db()
+  const result = await db()
     .prepare(
-      "INSERT INTO research_memories (id,owner,content,source_run_id,created_at) VALUES (?,?,?,?,?)",
+      "INSERT INTO research_memories (id,owner,content,source_run_id,created_at) SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM research_workspaces WHERE id=? AND expires_at>?) AND (SELECT COUNT(*) FROM research_memories WHERE owner=?) < 20",
     )
-    .bind(memory.id, owner, text, sourceRunId ?? null, memory.createdAt)
+    .bind(
+      memory.id,
+      owner,
+      text,
+      sourceRunId ?? null,
+      memory.createdAt,
+      owner,
+      Date.now(),
+      owner,
+    )
     .run();
+  if (!result.meta.changes)
+    throw new Error("工作台已失效或偏好达到20条上限，请刷新后重试。");
   return memory;
 }
 export async function deleteMemory(owner: string, id: string) {
