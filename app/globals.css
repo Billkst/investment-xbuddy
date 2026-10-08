@@ -2307,3 +2307,46 @@ button:focus-visible {
     font-size: 1rem;
   }
 }
+/* Temporary, account-free workspace notice. */
+.guest-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 20px 32px 0;
+  padding: 16px 18px;
+  border: 1px solid #c8d9f1;
+  border-radius: 12px;
+  color: #264e81;
+  background: #edf4ff;
+}
+.guest-banner > svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+}
+.guest-banner > div {
+  flex: 1;
+}
+.guest-banner strong {
+  font-size: 14px;
+}
+.guest-banner p {
+  font-size: 14px;
+  line-height: 1.7;
+  margin-top: 4px;
+}
+.guest-banner button {
+  flex-shrink: 0;
+}
+@media (max-width: 640px) {
+  .guest-banner {
+    margin: 14px 16px 0;
+    padding: 14px;
+    flex-wrap: wrap;
+  }
+  .guest-banner > div {
+    min-width: 180px;
+  }
+  .guest-banner button {
+    margin-left: 28px;
+  }
+}

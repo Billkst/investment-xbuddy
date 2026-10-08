@@ -94,6 +94,7 @@ import type {
   ResearchEvent,
 } from "@/lib/research/types";
 import { toolRegistry } from "@/lib/research/tools";
+import { GuestWorkspace } from "@/lib/research/guest";
 
 type Brief = {
   id: string;
@@ -165,10 +166,9 @@ function valueLabel(e: Evidence) {
   if (Math.abs(e.value) >= 1e8) return `${(e.value / 1e8).toFixed(2)} 亿`;
   return e.value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
-async function api<T = { run: Run; busy?: boolean; stopRequested?: boolean }>(
-  body?: Record<string, unknown>,
-  id?: string,
-) {
+async function serverApi<
+  T = { run: Run; busy?: boolean; stopRequested?: boolean },
+>(body?: Record<string, unknown>, id?: string) {
   const response = await fetch(
     `/api/research${id ? `?id=${encodeURIComponent(id)}` : ""}`,
     body
@@ -185,6 +185,34 @@ async function api<T = { run: Run; busy?: boolean; stopRequested?: boolean }>(
       status: response.status,
     });
   return data;
+}
+let guestAccess: boolean | null = null;
+let guestWorkspace: GuestWorkspace | undefined;
+function guests() {
+  if (!guestWorkspace) {
+    try {
+      guestWorkspace = new GuestWorkspace(window.sessionStorage);
+    } catch {
+      throw new Error("浏览器禁止临时存储，请允许本站存储后重试。");
+    }
+  }
+  return guestWorkspace;
+}
+async function api<T = { run: Run; busy?: boolean; stopRequested?: boolean }>(
+  body?: Record<string, unknown>,
+  id?: string,
+): Promise<T> {
+  if (!body && !id) {
+    const data = await serverApi<Bootstrap>();
+    guestAccess = !data.authenticated;
+    return {
+      ...data,
+      runs: guestAccess ? guests().listRuns() : data.runs,
+    } as T;
+  }
+  if (guestAccess === null) throw new Error("工作台正在准备，请稍后重试。");
+  if (guestAccess) return (await guests().request(body, id)) as T;
+  return serverApi<T>(body, id);
 }
 export default function Home() {
   const [boot, setBoot] = useState<Bootstrap | null>(null),
@@ -208,24 +236,33 @@ export default function Home() {
   const refresh = useCallback(async () => {
     const data = await api<Bootstrap>();
     setBoot(data);
+    if (!data.authenticated) setMode("demo");
     return data as Bootstrap;
   }, []);
   useEffect(() => {
     refresh()
       .then(async (data) => {
         const id = new URLSearchParams(window.location.search).get("run");
-        if (id && data.authenticated) {
+        if (id) {
           const saved = await api(undefined, id);
           setRun(saved.run);
           setTab(saved.run.report ? "report" : "plan");
         }
       })
       .catch((e) => setError(e.message));
-    const draft = sessionStorage.getItem("xbuddy-draft");
-    if (draft) setGoal(draft);
+    try {
+      const draft = sessionStorage.getItem("xbuddy-draft");
+      if (draft) setGoal(draft);
+    } catch {
+      /* Draft recovery is optional; guest storage reports its own error. */
+    }
   }, [refresh]);
   useEffect(() => {
-    sessionStorage.setItem("xbuddy-draft", goal);
+    try {
+      sessionStorage.setItem("xbuddy-draft", goal);
+    } catch {
+      /* Keep the editable input even when draft storage is unavailable. */
+    }
   }, [goal]);
   const showRun = useCallback((next: Run) => {
     setRun(next);
@@ -295,10 +332,9 @@ export default function Home() {
         toast.error("请描述至少4个字的研究目标");
         return;
       }
-      if (!boot?.authenticated) {
-        toast("请先登录，研究将保存在你的个人空间");
-        window.location.href = "/signin-with-chatgpt?return_to=/";
-        return;
+      if (!boot) return;
+      if (!boot.authenticated && inputMode === "live") {
+        throw new Error("免登录体验使用构造数据；真实数据研究请先登录。");
       }
       generation.current++;
       setBusy(true);
@@ -308,7 +344,7 @@ export default function Home() {
         const data = await api({
           action: "create",
           goal: text,
-          mode: inputMode ?? mode,
+          mode: boot.authenticated ? (inputMode ?? mode) : "demo",
           maxCalls: Number(budget),
           fault,
         });
@@ -323,7 +359,7 @@ export default function Home() {
         setBusy(false);
       }
     },
-    [goal, mode, budget, fault, boot?.authenticated, showRun],
+    [goal, mode, budget, fault, boot, showRun],
   );
   const action = async (
     name: string,
@@ -383,6 +419,22 @@ export default function Home() {
     setError("");
     setStopRequested(false);
     setGoal("");
+  };
+  const clearGuest = async () => {
+    generation.current++;
+    setBusy(true);
+    try {
+      await guests().request({ action: "guest_clear" });
+      sessionStorage.removeItem("xbuddy-draft");
+      newResearch();
+      setSelectedEvidence(null);
+      await refresh();
+      toast.success("临时研究记录已清除");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   };
   const saveMemory = async (e: FormEvent) => {
     e.preventDefault();
@@ -568,11 +620,11 @@ export default function Home() {
           <div className="profile">
             <div className="avatar">研</div>
             <div>
-              {boot?.authenticated ? "个人研究空间" : "个人工作台"}
+              {boot?.authenticated ? "个人研究空间" : "免登录临时体验"}
               <small>
                 {boot?.authenticated
                   ? "研究记录已隔离保存"
-                  : "登录后保存研究进度"}
+                  : "记录仅保存在当前标签页"}
               </small>
             </div>
           </div>
@@ -595,7 +647,7 @@ export default function Home() {
           <div className="topbar-actions">
             <span className="private-label">
               <ShieldCheck size={14} />
-              个人空间
+              {boot?.authenticated ? "个人空间" : "访客体验"}
             </span>
             {boot && !boot.authenticated ? (
               <a
@@ -628,6 +680,31 @@ export default function Home() {
               }}
             >
               重试
+            </Button>
+            {guestAccess && !boot && (
+              <Button variant="outline" size="sm" onClick={clearGuest}>
+                清除临时记录
+              </Button>
+            )}
+          </div>
+        )}
+        {boot && !boot.authenticated && (
+          <div className="guest-banner">
+            <FlaskConical size={19} />
+            <div>
+              <strong>免登录，直接开始研究体验</strong>
+              <p>
+                使用规则规划与构造数据，支持计划、审批、证据和报告导出。记录仅保存在当前标签页，刷新可继续；登录后不会自动同步。
+              </p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={clearGuest}
+            >
+              <Trash2 size={14} />
+              清除临时记录
             </Button>
           </div>
         )}
@@ -674,7 +751,9 @@ export default function Home() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="live">真实数据</SelectItem>
+                      <SelectItem value="live" disabled={!boot?.authenticated}>
+                        真实数据{!boot?.authenticated ? "（登录后）" : ""}
+                      </SelectItem>
                       <SelectItem value="demo">构造数据演示</SelectItem>
                     </SelectContent>
                   </Select>
@@ -685,7 +764,7 @@ export default function Home() {
                 </div>
                 <Button
                   type="submit"
-                  disabled={busy || !goal.trim()}
+                  disabled={busy || !boot || !goal.trim()}
                   className="create-button"
                 >
                   {busy ? (
@@ -761,7 +840,7 @@ export default function Home() {
                   className="sample-card"
                   onClick={() => {
                     setGoal(s.text);
-                    setMode(s.mode);
+                    setMode(boot?.authenticated ? s.mode : "demo");
                   }}
                 >
                   <span className="sample-icon">
@@ -1357,9 +1436,23 @@ export default function Home() {
             <p className="page-intro">
               明确保存的偏好会在新研究中读取，你可以随时删除。
             </p>
+            {boot && !boot.authenticated && (
+              <div className="inline-note">
+                <BookOpen size={16} />
+                长期偏好保存在个人账号中。
+                <a
+                  href="/signin-with-chatgpt?return_to=/"
+                  target="_top"
+                  className="login-link"
+                >
+                  登录后使用研究记忆
+                </a>
+              </div>
+            )}
             <form onSubmit={saveMemory} className="memory-form">
               <label htmlFor="memory">保存研究偏好</label>
               <Textarea
+                disabled={!boot?.authenticated}
                 id="memory"
                 value={memoryText}
                 maxLength={300}
@@ -1412,6 +1505,12 @@ export default function Home() {
             <p className="page-intro">
               计划只能使用已注册的工具。服务未配置或数据不可用时，会保留明确的缺口。
             </p>
+            {boot && !boot.authenticated && (
+              <div className="inline-note">
+                <FlaskConical size={16} />
+                当前临时体验在浏览器中运行，不调用以下真实服务。登录后可使用已配置的数据能力。
+              </div>
+            )}
             <div className="connection-grid">
               <Connection
                 title="规划与解释模型"
