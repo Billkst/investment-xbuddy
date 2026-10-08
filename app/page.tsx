@@ -154,9 +154,9 @@ const samples = [
     icon: Activity,
   },
   {
-    tag: "指数观察",
-    title: "沪深300近三个月表现",
-    text: "研究沪深300近三个月的走势和最大回撤，给出简短研究摘要。",
+    tag: "宏观观察",
+    title: "中国CPI最近一年的变化",
+    text: "研究中国最近一年CPI当月同比的变化，注明数据来源、频率和单位，输出简短摘要。",
     mode: "live" as Mode,
     icon: Compass,
   },
@@ -178,6 +178,7 @@ function dateLabel(value: string) {
   });
 }
 function valueLabel(e: Evidence) {
+  if (e.text) return e.evidenceKind === "discovery" ? "候选清单" : "原文片段";
   if (e.value === null) return "—";
   if (Math.abs(e.value) >= 1e8) return `${(e.value / 1e8).toFixed(2)} 亿`;
   return e.value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
@@ -628,7 +629,7 @@ export default function Home() {
       "\n## 证据",
       ...run.evidence.map(
         (e) =>
-          `\n### ${e.id}\n${e.security.name} · ${e.label}: ${e.value ?? "缺失"} ${e.unit}\n来源：${e.source}\n数据时点：${e.asOf}\n获取时间：${e.retrievedAt}\n口径：${e.basis}\n字段：${e.field}\n链接：${e.sourceUrl || "本地计算/构造数据"}\n${e.formula ? `公式：${e.formula}\n输入证据：${e.inputIds?.join(", ")}` : ""}\n\`\`\`json\n${JSON.stringify(e.raw, null, 2)}\n\`\`\``,
+          `\n### ${e.id}\n${e.security.name} · ${e.label}: ${e.text ?? e.value ?? "缺失"} ${e.unit}\n质量：${e.quality}\n来源：${e.source}\n数据时点：${e.asOf}\n获取时间：${e.retrievedAt}\n口径：${e.basis}\n字段：${e.field}\n链接：${e.sourceUrl || "本地计算/构造数据"}\n${e.formula ? `公式：${e.formula}\n输入证据：${e.inputIds?.join(", ")}` : ""}\n\`\`\`json\n${JSON.stringify(e.raw, null, 2)}\n\`\`\``,
       ),
     ].join("\n");
     const url = URL.createObjectURL(
@@ -683,9 +684,10 @@ export default function Home() {
       (e) =>
         e.quality === "verified" &&
         e.value !== null &&
-        /^(现金利润比|市盈率 TTM|区间涨跌幅|最大回撤|年化波动率)$/.test(
+        (/^(现金利润比|市盈率 TTM|区间涨跌幅|最大回撤|年化波动率)$/.test(
           e.label,
-        ),
+        ) ||
+          !!e.observations),
     )
     .sort((a, b) => b.asOf.localeCompare(a.asOf))
     .filter((e) => {
@@ -948,7 +950,7 @@ export default function Home() {
                         ? "构造"
                         : e.quality === "missing"
                           ? "缺失"
-                          : e.quality === "stale"
+                          : ["stale", "unverified"].includes(e.quality)
                             ? "待核对"
                             : e.formula
                               ? "计算"
@@ -1215,7 +1217,9 @@ export default function Home() {
             </form>
             <p className="composer-note">
               {boot?.config.fuyao
-                ? "使用扶摇行情、财报与估值。"
+                ? boot.config.ifind
+                  ? "可研究行情、财报、公告、新闻与宏观指标。"
+                  : "使用扶摇行情、财报与估值。"
                 : "当前可研究 A 股和指数行情；财报、估值需配置扶摇权限。"}{" "}
               缺失数据会明确说明。
             </p>
@@ -1254,7 +1258,7 @@ export default function Home() {
                 <h1>
                   {run.intent?.securities.length
                     ? run.intent.securities.map((s) => s.name).join(" × ")
-                    : "正在理解研究目标"}
+                    : run.intent?.topic || "正在理解研究目标"}
                 </h1>
                 <p className="run-goal">{run.goal}</p>
               </div>
@@ -1645,7 +1649,7 @@ export default function Home() {
                   <p>
                     {boot?.config.model
                       ? "访客不需要注册或填写密钥；实际调用失败时会说明原因。"
-                      : "需要站点维护者申请官方 API key 并设置服务端密钥。当前保持规则运行，没有真实模型调用。"}
+                      : "共享模型暂未配置，可填写个人模型 key。"}
                   </p>
                   <p>
                     站点保护额度：全站每天{" "}
@@ -2017,7 +2021,10 @@ function IfindSettings({
           )}
           {busy ? "正在连接…" : "验证连接并发现工具"}
         </Button>
-        <p>先验证连接，再接入研究流程；当前研究尚未使用 iFinD 数据。</p>
+        <p>
+          9
+          项只读工具已接入研究。系统按目标调用，原文与指标保留来源；缺少单位或日期的结果标为待核对。
+        </p>
         {connection && (
           <p>
             验证时间：{dateLabel(connection.checkedAt)}
@@ -2114,8 +2121,8 @@ function EvidenceDetail({
           ? "构造数据"
           : e.quality === "missing"
             ? "数据缺失"
-            : e.quality === "stale"
-              ? "可能过期"
+            : ["stale", "unverified"].includes(e.quality)
+              ? "待核对"
               : "已保存证据"}
       </span>
       <h2>
@@ -2125,9 +2132,13 @@ function EvidenceDetail({
         {valueLabel(e)}
         <span>{e.unit}</span>
       </div>
+      {e.text && <pre className="text-evidence">{e.text}</pre>}
       <dl>
         {[
-          ["证券代码", e.security.code],
+          [
+            e.security.kind === "topic" ? "研究主题" : "证券代码",
+            e.security.kind === "topic" ? e.security.name : e.security.code,
+          ],
           ["数据时点", e.asOf],
           ["获取时间", new Date(e.retrievedAt).toLocaleString("zh-CN")],
           ["数据来源", e.source],
@@ -2181,14 +2192,20 @@ function EvidenceDetail({
   );
 }
 function PriceChart({ evidence }: { evidence: Evidence[] }) {
-  const item = evidence.find((e) => e.series?.length && e.value !== null);
-  if (!item?.series) return null;
+  const item = evidence.find(
+    (e) =>
+      (e.series?.length || e.observations?.length) &&
+      e.value !== null &&
+      e.quality === "verified",
+  );
+  if (!item || !(item.series?.length || item.observations?.length)) return null;
   return (
     <div className="price-chart">
       <div>
         <h3>
-          {item.security.name} · 历史收盘
-          {item.security.kind === "index" ? "点位" : "价"}
+          {item.observations
+            ? item.label
+            : `${item.security.name} · 历史收盘${item.security.kind === "index" ? "点位" : "价"}`}
         </h3>
         <span>
           {item.quality === "demo" ? "构造数据" : item.source} · {item.unit}
@@ -2196,7 +2213,7 @@ function PriceChart({ evidence }: { evidence: Evidence[] }) {
       </div>
       <ResponsiveContainer width="100%" height={220}>
         <AreaChart
-          data={item.series}
+          data={item.series ?? item.observations}
           margin={{ top: 20, right: 8, bottom: 0, left: -20 }}
         >
           <defs>

@@ -2859,3 +2859,19 @@ button:focus-visible {
   background: #f8fafc;
   margin-top: 8px;
 }
+
+.text-evidence {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 480px;
+  overflow: auto;
+  background: #f8fafc;
+  padding: 16px;
+  font: 14px/1.7 inherit;
+  border-radius: 10px;
+  margin: 16px 0;
+}
+.quality-label.unverified {
+  color: #996600;
+  background: #fff5da;
+}

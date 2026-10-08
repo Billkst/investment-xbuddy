@@ -46,6 +46,34 @@ function configuredModel(
   credential?: unknown,
 ) {
   const config = modelRuntime(selection, credential, runtime());
+  config.beforeFinancialCall = async () => {
+    const day = Math.floor(Date.now() / 86400000),
+      minute = Math.floor(Date.now() / 60000);
+    await store.reserveModelBudget(
+      [
+        {
+          bucket: `ifind:data:minute:${minute}`,
+          callLimit: 12,
+          tokenLimit: 1,
+          expiresAt: (minute + 2) * 60000,
+        },
+        {
+          bucket: `ifind:data:day:${day}`,
+          callLimit: 200,
+          tokenLimit: 1,
+          expiresAt: (day + 2) * 86400000,
+        },
+        {
+          bucket: `ifind:data:workspace:${owner}:${day}`,
+          callLimit: 40,
+          tokenLimit: 1,
+          expiresAt: (day + 2) * 86400000,
+        },
+      ],
+      0,
+      "iFinD 取数已达到站点或工作台保护额度，请稍后重试。",
+    );
+  };
   config.beforeModelCall = async (tokens) => {
     const now = Date.now(),
       day = Math.floor(now / 86400000),
@@ -153,6 +181,13 @@ export async function GET(request: Request) {
       owner = workspace.owner;
       cookie = workspace.cookie;
     }
+    const ifindConnection = config.ifindMcpApiKey
+      ? await store.getServiceConnection<IfindConnection>(
+          "ifind",
+          await credentialFingerprint(config.ifindMcpApiKey),
+        )
+      : null;
+    if (ifindConnection) ifindConnection.researchEnabled = true;
     return json(
       {
         access: "anonymous",
@@ -160,12 +195,7 @@ export async function GET(request: Request) {
           (run) => run.mode === "live",
         ),
         memories: await store.listMemories(owner),
-        ifindConnection: config.ifindMcpApiKey
-          ? await store.getServiceConnection<IfindConnection>(
-              "ifind",
-              await credentialFingerprint(config.ifindMcpApiKey),
-            )
-          : null,
+        ifindConnection,
         config: {
           model: !!(config.llmApiKey && config.llmBaseUrl && config.llmModel),
           modelName: config.llmModel ?? null,

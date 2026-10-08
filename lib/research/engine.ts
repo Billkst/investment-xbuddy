@@ -1,3 +1,4 @@
+import { usableEvidence, numericEvidence } from "./evidence.ts";
 import {
   type Run,
   type Step,
@@ -21,8 +22,10 @@ export function researchContext(run: Run, includeSeries = true): string {
     preferences: run.memoryContext.map((m) => m.text),
     summary: run.context.summary,
     evidence: run.evidence
-      .filter(
-        (e) => !includeSeries || !run.context.coveredSteps.includes(e.stepId),
+      .filter((e) =>
+        includeSeries
+          ? !run.context.coveredSteps.includes(e.stepId)
+          : usableEvidence(e),
       )
       .map((e) => ({
         id: e.id,
@@ -36,12 +39,22 @@ export function researchContext(run: Run, includeSeries = true): string {
               security: e.security.name,
               label: e.label,
               value: e.value,
+              text: e.text?.slice(0, 3000),
+              evidenceKind: e.evidenceKind,
               unit: e.unit,
               asOf: e.asOf,
               quality: e.quality,
               basis: e.basis,
             }),
         series: includeSeries ? e.series : undefined,
+        observations: includeSeries ? e.observations : undefined,
+        observationSummary: e.observations?.length
+          ? {
+              first: e.observations[0],
+              last: e.observations.at(-1),
+              sampleCount: e.observations.length,
+            }
+          : undefined,
         seriesSummary:
           !includeSeries && e.series?.length
             ? {
@@ -71,9 +84,10 @@ export function compressContext(
 ): boolean {
   const before = researchContext(run);
   if (before.length < limit && !force) return false;
-  const summaries = run.evidence.map(
-    (e) =>
-      `${e.id}: ${e.security.name} ${e.label}=${e.value ?? "缺失"}${e.unit}; 时点${e.asOf}; ${e.quality}; 口径${e.basis}; ${e.note ?? ""}${e.formula ? `;公式${e.formula};输入${e.inputIds?.join(",")}` : ""}`,
+  const summaries = run.evidence.map((e) =>
+    !usableEvidence(e)
+      ? `${e.id}: ${e.quality}（不可用于事实或推断；详情保留于原始证据）`
+      : `${e.id}: ${e.security.name} ${e.label}=${!usableEvidence(e) ? "待核对，不可作为事实" : e.text ? e.text.slice(0, 350) : (e.value ?? "缺失")}${e.unit}; 时点${e.asOf}; ${e.quality}; 口径${e.basis}; ${e.note ?? ""}${e.formula ? `;公式${e.formula};输入${e.inputIds?.join(",")}` : ""}`,
   );
   run.context.summary = [
     `研究目标：${run.goal}`,
@@ -161,14 +175,20 @@ export async function advanceRun(
     }
     if (!Object.hasOwn(toolRegistry, step.tool))
       throw new Error("计划包含未注册工具，已停止执行");
-    if (run.intent!.securities.length > 2 && !run.scopeApproved) {
+    if (
+      (run.intent!.securities.length > 2 ||
+        run.steps.some((s) => s.tool === "ifind.search_securities")) &&
+      !run.scopeApproved
+    ) {
       run.status = "waiting_approval";
       run.approval = {
         id: uid("approval"),
         kind: "scope",
         current: 2,
         proposed: run.intent!.securities.length,
-        reason: `本轮涉及 ${run.intent!.securities.length} 个标的，超过默认的 2 个标的范围。请确认继续。`,
+        reason: run.steps.some((s) => s.tool === "ifind.search_securities")
+          ? "本轮将按你的条件检索整个证券市场，并最多展示5个候选。筛选结果不是买卖建议，请确认这一研究范围。"
+          : `本轮涉及 ${run.intent!.securities.length} 个标的，超过默认的 2 个标的范围。请确认继续。`,
         planVersion: run.planVersion,
       };
       event(run, "approval_requested", "需要确认研究范围", run.approval.reason);
@@ -215,13 +235,13 @@ export async function advanceRun(
             : "没有可计算的完整指标",
         step.durationMs,
       );
-      for (const e of evidence.filter(
-        (e) => e.quality === "missing" || e.quality === "stale",
+      for (const e of evidence.filter((e) =>
+        ["missing", "stale", "unverified"].includes(e.quality),
       ))
         event(
           run,
           "data_quality",
-          `${e.security.name} · ${e.label} ${e.quality === "missing" ? "字段缺失" : "可能过期"}`,
+          `${e.security.name} · ${e.label} ${e.quality === "missing" ? "字段缺失" : e.quality === "unverified" ? "待核对" : "可能过期"}`,
           e.note,
         );
       if (step.tool === "research.report") run.status = "completed";
@@ -390,10 +410,13 @@ function formatValue(e: Evidence) {
 }
 export async function buildReport(run: Run, config: RuntimeConfig) {
   const findings: Finding[] = run.evidence
-    .filter((e) => e.value !== null && e.quality !== "missing")
+    .filter(usableEvidence)
+    .filter((e) => !e.text || !unsafeFinancialLanguage(e.text))
     .map((e) => ({
       kind: "fact",
-      text: `${e.security.name}：${e.label}为 ${formatValue(e)}（${e.asOf}；${e.basis}）。`,
+      text: e.text
+        ? `${e.source}《${e.label}》（${e.asOf}）记载：“${e.text.slice(0, 450)}${e.text.length > 450 ? "…" : ""}”。这是来源摘录，未独立核实其中观点。`
+        : `${e.security.name}：${e.label}为 ${formatValue(e)}（${e.asOf}；${e.basis}）。`,
       evidenceIds: [e.id],
     }));
   const gaps = [
@@ -401,7 +424,7 @@ export async function buildReport(run: Run, config: RuntimeConfig) {
       .filter((s) => s.status === "failed" || s.status === "skipped")
       .map((s) => `${s.title}：${s.error ?? "未执行"}`),
     ...run.evidence
-      .filter((e) => e.quality === "missing" || e.quality === "stale")
+      .filter((e) => ["missing", "stale", "unverified"].includes(e.quality))
       .map(
         (e) =>
           `${e.security.name} ${e.label}：${e.note ?? "字段缺失或可能过期"}`,
@@ -417,13 +440,19 @@ export async function buildReport(run: Run, config: RuntimeConfig) {
     const profit = run.evidence.find(
       (e) => ratio.inputIds?.includes(e.id) && e.label === "合并净利润",
     );
-    if (profit?.value && profit.value > 0 && ratio.quality !== "missing")
+    if (profit?.value && profit.value > 0 && numericEvidence(ratio))
       findings.push({
         kind: "inference",
         text: `${ratio.security.name}本期经营现金流${ratio.value! >= 1 ? "覆盖" : "未完全覆盖"}合并净利润。单期比例受营运资本和收款节奏影响，需要结合多期数据核对。`,
         evidenceIds: ratio.inputIds ?? [ratio.id],
       });
   }
+  for (const e of run.evidence.filter((e) => e.evidenceKind === "discovery"))
+    findings.push({
+      kind: "uncertainty",
+      text: `${e.label}（候选，待核对）：${e.text && unsafeFinancialLanguage(e.text) ? "来源包含交易建议或收益承诺，未纳入报告。请核对原始记录。" : (e.text?.slice(0, 2000) ?? "")}。${e.note ?? ""}`,
+      evidenceIds: [e.id],
+    });
   if (run.intent?.focus.includes("价格与风险"))
     findings.push({
       kind: "uncertainty",
@@ -434,7 +463,7 @@ export async function buildReport(run: Run, config: RuntimeConfig) {
     !run.partialOnly &&
     config.llmApiKey &&
     run.fault !== "model_failure" &&
-    run.evidence.some((e) => e.value !== null && e.quality !== "missing") &&
+    run.evidence.some(usableEvidence) &&
     run.usage.calls < run.budget.maxCalls
   ) {
     try {
@@ -453,9 +482,7 @@ export async function buildReport(run: Run, config: RuntimeConfig) {
           !Array.isArray(x.evidenceIds) ||
           !x.evidenceIds.length ||
           !x.evidenceIds.every((id) =>
-            run.evidence.some(
-              (e) => e.id === id && e.value !== null && e.quality !== "missing",
-            ),
+            run.evidence.some((e) => e.id === id && usableEvidence(e)),
           )
         )
           continue;
@@ -486,19 +513,17 @@ export async function buildReport(run: Run, config: RuntimeConfig) {
     gaps.push(
       "模型未配置或不可用：本报告由证据规则整理，未使用大模型开展开放式综合分析。",
     );
-  if (!run.evidence.some((e) => e.value !== null && e.quality !== "missing"))
-    gaps.push("未取得可用数值证据，无法形成实质研究判断。");
+  if (!run.evidence.some(usableEvidence))
+    gaps.push("未取得可用数值或原文证据，无法形成实质研究判断。");
   if (run.mode === "demo")
     gaps.unshift(
       "演示模式：全部金融数值为构造数据，所有事实与推断只用于验证工作流程，不代表真实证券。",
     );
   return {
-    title: `${run.intent?.securities.map((s) => s.name).join(" × ") ?? "研究"} · ${run.intent?.output ?? "研究备忘录"}`,
+    title: `${run.intent?.securities.map((s) => s.name).join(" × ") || run.intent?.topic || "研究"} · ${run.intent?.output ?? "研究备忘录"}`,
     createdAt: now(),
-    summary: run.evidence.some(
-      (e) => e.value !== null && e.quality !== "missing",
-    )
-      ? `围绕“${run.goal}”，整理了 ${run.evidence.length} 条证据。${gaps.length ? "存在下列数据或能力限制，请结合证据范围阅读。" : "关键数值均附原始字段与口径。"}`
+    summary: run.evidence.some((e) => usableEvidence(e))
+      ? `围绕“${run.goal}”，整理了 ${run.evidence.length} 条证据。${gaps.length ? "存在下列数据或能力限制，请结合证据范围阅读。" : "关键证据均附原始字段或原文与口径。"}`
       : "当前证据不足，已保留执行过程和数据缺口，待补齐后继续研究。",
     findings,
     gaps,

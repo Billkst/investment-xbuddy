@@ -1,4 +1,4 @@
-// Connection/discovery only. Research tool execution is registered separately.
+// Fixed-endpoint MCP transport; the research layer validates tool names and arguments.
 export const IFIND_ENDPOINT =
   "https://api-mcp.51ifind.com:8643/ds-mcp-servers/hexin-ifind-ds-mcp";
 const supportedVersions = ["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -18,7 +18,7 @@ export interface IfindConnection {
   protocolVersion?: string;
   tools: IfindTool[];
   complete: boolean;
-  researchEnabled: false;
+  researchEnabled: boolean;
 }
 type Rpc = {
   jsonrpc?: string;
@@ -110,12 +110,23 @@ export async function readRpcResponse(
     await reader.cancel().catch(() => {});
   }
 }
-export async function discoverIfind(key: string): Promise<IfindConnection> {
+async function withIfindSession<T>(
+  key: string,
+  work: (
+    post: (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => Promise<Record<string, unknown>>,
+    init: Record<string, unknown>,
+    protocol: string,
+  ) => Promise<T>,
+  timeoutMs = 25000,
+): Promise<T> {
   if (!/^[\x21-\x7e]{8,2048}$/.test(key))
     throw new Error(
       "iFinD MCP 密钥为空或格式无效，请在服务端配置 IFIND_MCP_API_KEY。",
     );
-  const signal = AbortSignal.timeout(25000);
+  const signal = AbortSignal.timeout(timeoutMs);
   let session = "",
     protocol = supportedVersions[0];
   const headers = () => ({
@@ -200,6 +211,22 @@ export async function discoverIfind(key: string): Promise<IfindConnection> {
     if (!isRecord(init.capabilities) || !isRecord(init.capabilities.tools))
       throw new Error("此 iFinD 服务没有开放工具发现能力。");
     await post("notifications/initialized", undefined, true);
+    return await work(post, init, protocol);
+  } finally {
+    if (session)
+      await fetch(IFIND_ENDPOINT, {
+        method: "DELETE",
+        headers: headers(),
+        redirect: "manual",
+        signal: AbortSignal.timeout(3000),
+      })
+        .then((r) => r.body?.cancel())
+        .catch(() => {});
+  }
+}
+
+export async function discoverIfind(key: string): Promise<IfindConnection> {
+  return withIfindSession(key, async (post, init, protocol) => {
     const tools: IfindTool[] = [],
       seen = new Set<string>(),
       cursors = new Set<string>();
@@ -268,21 +295,39 @@ export async function discoverIfind(key: string): Promise<IfindConnection> {
       protocolVersion: protocol,
       tools,
       complete,
-      researchEnabled: false,
+      researchEnabled: true,
     };
     const encoded = JSON.stringify(state).replaceAll(key, "[redacted]");
     if (new TextEncoder().encode(encoded).byteLength > 900000)
       throw new Error("iFinD 工具定义超过保存上限，连接清单未保存。");
     return JSON.parse(encoded) as IfindConnection;
-  } finally {
-    if (session)
-      await fetch(IFIND_ENDPOINT, {
-        method: "DELETE",
-        headers: headers(),
-        redirect: "manual",
-        signal: AbortSignal.timeout(3000),
-      })
-        .then((r) => r.body?.cancel())
-        .catch(() => {});
-  }
+  });
+}
+
+export async function callIfindTool(
+  key: string,
+  name: string,
+  args: Record<string, unknown>,
+  beforeCall?: () => Promise<void>,
+): Promise<Record<string, unknown>> {
+  return withIfindSession(
+    key,
+    async (post) => {
+      await beforeCall?.();
+      const result = await post("tools/call", { name, arguments: args });
+      if (result.isError === true)
+        throw new Error(
+          "iFinD 工具执行失败，请核对查询范围、参数和账户权限后重试。",
+        );
+      if (!Array.isArray(result.content) && !isRecord(result.structuredContent))
+        throw new Error("iFinD 工具未返回可解析内容。");
+      const safe = JSON.stringify(result).replaceAll(key, "[redacted]");
+      if (new TextEncoder().encode(safe).byteLength > 160000)
+        throw new Error(
+          "iFinD 返回数据过多，请缩小查询范围后重试；未保存截断数据。",
+        );
+      return JSON.parse(safe);
+    },
+    65000,
+  );
 }

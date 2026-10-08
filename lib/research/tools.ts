@@ -1,3 +1,6 @@
+import { ifindCatalog } from "../integrations/ifind-catalog.ts";
+import { executeIfind } from "./ifind-tools.ts";
+import { numericEvidence } from "./evidence.ts";
 import {
   type Evidence,
   type Run,
@@ -23,6 +26,32 @@ export const toolRegistry: Record<
     parameters: Record<string, unknown>;
   }
 > = {
+  ...(Object.fromEntries(
+    Object.entries(ifindCatalog).map(([name, tool]) => [
+      `ifind.${name}`,
+      {
+        title: tool.title,
+        description: tool.description,
+        permission: "ifind:read",
+        timeoutMs: 65000,
+        cost: "1次MCP取数请求；需iFinD权限",
+        parameters: {
+          type: "object",
+          properties: { query: { type: "string" }, market: { type: "string" } },
+        },
+      },
+    ]),
+  ) as unknown as Record<
+    `ifind.${keyof typeof ifindCatalog}`,
+    {
+      title: string;
+      description: string;
+      permission: string;
+      timeoutMs: number;
+      cost: string;
+      parameters: Record<string, unknown>;
+    }
+  >),
   "market.snapshot": {
     title: "行情快照",
     description: "证券最新公开价格与数据时点",
@@ -227,6 +256,7 @@ export async function executeDataTool(
   run: Run,
   config: RuntimeConfig,
 ): Promise<Evidence[]> {
+  if (step.tool.startsWith("ifind.")) return executeIfind(step, run, config);
   if (
     !Object.hasOwn(toolRegistry, step.tool) ||
     !step.security ||
@@ -691,6 +721,7 @@ export function computeMetrics(run: Run, step: Step): Evidence[] {
         inputs: inputs.map((x) => ({ id: x.id, value: x.value, asOf: x.asOf })),
       },
       series: undefined,
+      observations: undefined,
       source: "XBuddy 指标计算",
       sourceUrl: "",
       quality: inputs.some((x) => x.quality === "demo")
@@ -702,10 +733,28 @@ export function computeMetrics(run: Run, step: Step): Evidence[] {
   };
   for (const evidence of run.evidence) {
     if (
+      evidence.observations &&
+      evidence.observations.length > 1 &&
+      numericEvidence(evidence)
+    ) {
+      const points = evidence.observations,
+        first = points[0],
+        last = points.at(-1)!;
+      make(
+        evidence,
+        `${evidence.label} · 区间变化`,
+        last.value - first.value,
+        evidence.unit === "%" ? "个百分点" : evidence.unit,
+        "末期观测值 - 首期观测值",
+        [evidence],
+        `${first.date} 至 ${last.date}，${points.length} 个观测；${evidence.basis}；不做收益率或交易日年化解释`,
+      );
+    }
+    if (
       evidence.series &&
       evidence.series.length > 1 &&
       evidence.value !== null &&
-      evidence.quality !== "missing"
+      numericEvidence(evidence)
     ) {
       const series = evidence.series;
       const first = series[0].value,
@@ -758,9 +807,7 @@ export function computeMetrics(run: Run, step: Step): Evidence[] {
   }
   for (const cash of run.evidence.filter(
     (e) =>
-      e.label === "经营现金流净额" &&
-      e.value !== null &&
-      e.quality !== "missing",
+      e.label === "经营现金流净额" && e.value !== null && numericEvidence(e),
   )) {
     const profit = run.evidence.find(
       (e) =>
@@ -768,7 +815,7 @@ export function computeMetrics(run: Run, step: Step): Evidence[] {
         e.asOf === cash.asOf &&
         e.label === "合并净利润" &&
         e.value !== null &&
-        e.quality !== "missing",
+        numericEvidence(e),
     );
     if (profit && profit.value !== 0)
       make(

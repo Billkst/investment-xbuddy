@@ -70,7 +70,7 @@ test("handshake, raw authentication, session, pagination, schema and cleanup", a
   const result = await discoverIfind(key);
   assert.equal(result.status, "connected");
   assert.equal(result.tools.length, 2);
-  assert.equal(result.researchEnabled, false);
+  assert.equal(result.researchEnabled, true);
   assert.deepEqual(result.tools[0].inputSchema, definition.inputSchema);
   assert.ok(!JSON.stringify(result).includes(key));
   assert.deepEqual(methods, [

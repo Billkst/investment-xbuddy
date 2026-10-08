@@ -1,3 +1,4 @@
+import type { IfindName } from "../integrations/ifind-catalog.ts";
 import type { ModelSelection } from "./model-settings.ts";
 export type Mode = "live" | "demo";
 export type RunStatus =
@@ -10,6 +11,7 @@ export type RunStatus =
   | "completed"
   | "failed";
 export type ToolName =
+  | `ifind.${IfindName}`
   | "market.snapshot"
   | "market.history"
   | "finance.income"
@@ -20,9 +22,12 @@ export type ToolName =
 export interface Security {
   code: string;
   name: string;
-  kind: "stock" | "index";
+  kind: "stock" | "index" | "topic";
 }
 export interface Intent {
+  topic?: string;
+  market?: string;
+  broadScope?: boolean;
   securities: Security[];
   focus: string[];
   start: string;
@@ -37,6 +42,7 @@ export interface Step {
   title: string;
   tool: ToolName;
   security?: Security;
+  parameters?: Record<string, unknown>;
   status: "pending" | "running" | "succeeded" | "failed" | "skipped";
   attempts: number;
   evidenceIds: string[];
@@ -50,6 +56,8 @@ export interface Evidence {
   stepId: string;
   security: Security;
   label: string;
+  text?: string;
+  evidenceKind?: "numeric" | "excerpt" | "discovery";
   value: number | null;
   unit: string;
   asOf: string;
@@ -58,9 +66,10 @@ export interface Evidence {
   sourceUrl: string;
   field: string;
   basis: string;
-  quality: "verified" | "demo" | "missing" | "stale";
+  quality: "verified" | "demo" | "missing" | "stale" | "unverified";
   raw: unknown;
   series?: { date: string; value: number }[];
+  observations?: { date: string; value: number }[];
   formula?: string;
   inputIds?: string[];
   note?: string;
@@ -152,13 +161,14 @@ export interface RuntimeConfig {
   llmModel?: string;
   fuyaoApiKey?: string;
   ifindMcpApiKey?: string;
+  beforeFinancialCall?: () => Promise<void>;
   contextLimit: number;
   onProgress?: (run: Run) => Promise<void>;
   beforeModelCall?: (reservedTokens: number) => Promise<void>;
 }
 export interface PlannerResult {
   intent: Intent;
-  steps: Pick<Step, "title" | "tool" | "security">[];
+  steps: Pick<Step, "title" | "tool" | "security" | "parameters">[];
   model: boolean;
   warning?: string;
 }
