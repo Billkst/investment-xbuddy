@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { reserveModelSql, type ModelBudgetBucket } from "./model-budget.ts";
 import {
   type Run,
   type Memory,
@@ -17,6 +18,30 @@ export async function hasWorkspace(owner: string) {
     .prepare("SELECT id FROM research_workspaces WHERE id=? AND expires_at>?")
     .bind(owner, Date.now())
     .first());
+}
+export async function reserveModelBudget(
+  buckets: ModelBudgetBucket[],
+  tokens: number,
+) {
+  await db()
+    .prepare("DELETE FROM model_usage WHERE expires_at<?")
+    .bind(Date.now())
+    .run();
+  try {
+    await db().batch(
+      buckets.map((b) =>
+        db()
+          .prepare(reserveModelSql)
+          .bind(b.bucket, tokens, b.expiresAt, b.callLimit, b.tokenLimit),
+      ),
+    );
+  } catch (error) {
+    if (error instanceof Error && /CHECK constraint failed/.test(error.message))
+      throw new Error(
+        "本次模型调用已达到工作台或站点的额度限制，请稍后重试或切换规则模式。",
+      );
+    throw error;
+  }
 }
 export async function insertWorkspace(owner: string, expiresAt: number) {
   await db()

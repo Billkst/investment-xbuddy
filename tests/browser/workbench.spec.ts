@@ -1,8 +1,20 @@
 import { test, expect } from "@playwright/test";
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  await page.getByRole("combobox", { name: "模型来源", exact: true }).click();
+  await page
+    .getByRole("option", { name: "仅使用规则，不调用模型", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用配置", exact: true }).click();
+  await page.getByRole("button", { name: "新建研究", exact: true }).click();
+});
 test("免登录首页、自由目标、审批、报告、证据与刷新恢复", async ({ page }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto("/");
+
   await expect(
     page.getByRole("heading", { name: "今天，想研究什么？" }),
   ).toBeVisible();
@@ -64,7 +76,6 @@ test("免登录首页、自由目标、审批、报告、证据与刷新恢复",
   expect(errors).toEqual([]);
 });
 test("长期记忆可保存和删除", async ({ page }) => {
-  await page.goto("/");
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   await page.getByRole("button", { name: "研究记忆", exact: true }).click();
   await page
@@ -97,7 +108,7 @@ test("长期记忆可保存和删除", async ({ page }) => {
 });
 test("手机布局与导航不溢出", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+
   await expect(page.getByRole("textbox", { name: "研究目标" })).toBeVisible();
   expect(
     await page.evaluate(

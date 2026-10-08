@@ -94,6 +94,14 @@ import type {
   ResearchEvent,
 } from "@/lib/research/types";
 import { toolRegistry } from "@/lib/research/tools";
+import {
+  modelProviders,
+  parseModelSelection,
+  modelRuntime,
+  type ModelProvider,
+  type ModelSelection,
+  type ModelCredential,
+} from "@/lib/research/model-settings";
 
 type Brief = {
   id: string;
@@ -114,6 +122,12 @@ type Bootstrap = {
     fuyao: boolean;
     publicMarket: boolean;
     contextLimit: number;
+    sharedLimits: {
+      dailyCalls: number;
+      dailyTokens: number;
+      minuteCalls: number;
+      workspaceDailyCalls: number;
+    };
   };
   tools: typeof toolRegistry;
 };
@@ -164,16 +178,23 @@ function valueLabel(e: Evidence) {
   if (Math.abs(e.value) >= 1e8) return `${(e.value / 1e8).toFixed(2)} 亿`;
   return e.value.toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 }
+let personalCredential: ModelCredential | null = null;
 async function serverApi<
   T = { run: Run; busy?: boolean; stopRequested?: boolean },
 >(body?: Record<string, unknown>, id?: string) {
+  const payload =
+    body &&
+    personalCredential &&
+    ["create", "advance", "model_test"].includes(String(body.action))
+      ? { modelCredential: personalCredential, ...body }
+      : body;
   const response = await fetch(
     `/api/research${id ? `?id=${encodeURIComponent(id)}` : ""}`,
     body
       ? {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify(payload),
         }
       : undefined,
   );
@@ -214,6 +235,101 @@ export default function Home() {
     [memoryText, setMemoryText] = useState(""),
     [clarification, setClarification] = useState(""),
     [stopRequested, setStopRequested] = useState(false);
+  const [modelSelection, setModelSelection] = useState<ModelSelection>({
+    source: "site",
+  });
+  const [modelSource, setModelSource] = useState<"site" | "personal" | "rules">(
+    "site",
+  );
+  const [modelProvider, setModelProvider] = useState<ModelProvider>("groq");
+  const [modelName, setModelName] = useState<string>(
+    modelProviders.groq.defaultModel,
+  );
+  const [personalKey, setPersonalKey] = useState("");
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelMessage, setModelMessage] = useState("");
+  const [modelTestOk, setModelTestOk] = useState(false);
+  const selectedHasModel =
+    modelSelection.source === "personal"
+      ? !!personalCredential
+      : modelSelection.source === "site" && !!boot?.config.model;
+  const activeModel =
+    run && view === "research"
+      ? (run.modelSelection ?? { source: "site" as const })
+      : modelSelection;
+  const activeModelLabel =
+    activeModel.source === "rules"
+      ? "规则运行 · 无模型调用"
+      : activeModel.source === "site"
+        ? boot?.config.model
+          ? "共享模型 · 已配置"
+          : "AI 未接入 · 规则运行"
+        : personalCredential?.provider === activeModel.provider &&
+            personalCredential?.model === activeModel.model
+          ? "个人模型 · 已配置"
+          : "个人模型 · 待填写密钥";
+  const draftModel = () =>
+    parseModelSelection(
+      modelSource === "personal"
+        ? {
+            source: modelSource,
+            provider: modelProvider,
+            model: modelName.trim(),
+          }
+        : { source: modelSource },
+    );
+  const applyModel = () => {
+    try {
+      const selection = draftModel();
+      const credential =
+        selection.source === "personal"
+          ? {
+              provider: modelProvider,
+              model: modelName.trim(),
+              apiKey: personalKey.trim(),
+            }
+          : undefined;
+      modelRuntime(selection, credential, { contextLimit: 16000 });
+      if (credential) personalCredential = credential;
+      setModelSelection(selection);
+      setStopRequested(false);
+      toast.success(
+        "模型设置已应用。新研究使用此设置；已有研究保留原模型来源。",
+      );
+    } catch (e) {
+      setModelMessage((e as Error).message);
+      setModelTestOk(false);
+    }
+  };
+  const testModel = async () => {
+    setModelBusy(true);
+    setModelMessage("");
+    setModelTestOk(false);
+    try {
+      const selection = draftModel();
+      const credential =
+        selection.source === "personal"
+          ? {
+              provider: modelProvider,
+              model: modelName.trim(),
+              apiKey: personalKey.trim(),
+            }
+          : undefined;
+      const result = await api<{ ok: boolean; model: string }>({
+        action: "model_test",
+        modelSelection: selection,
+        modelCredential: credential,
+      });
+      setModelMessage(
+        `连接与 JSON 输出检查通过：${result.model}。点击“应用配置”用于研究。`,
+      );
+      setModelTestOk(true);
+    } catch (e) {
+      setModelMessage((e as Error).message);
+    } finally {
+      setModelBusy(false);
+    }
+  };
   const runRef = useRef(run);
   runRef.current = run;
   const advancing = useRef<string | null>(null);
@@ -328,6 +444,7 @@ export default function Home() {
           mode: inputMode ?? mode,
           maxCalls: Number(budget),
           fault,
+          modelSelection,
         });
         showRun(data.run);
         setView("research");
@@ -340,7 +457,7 @@ export default function Home() {
         setBusy(false);
       }
     },
-    [goal, mode, budget, fault, boot, showRun],
+    [goal, mode, budget, fault, boot, showRun, modelSelection],
   );
   const action = async (
     name: string,
@@ -418,6 +535,10 @@ export default function Home() {
       newResearch();
       setSelectedEvidence(null);
       await refresh();
+      personalCredential = null;
+      setPersonalKey("");
+      setModelSelection({ source: "site" });
+      setModelSource("site");
       toast.success("记录与记忆已清空，新的免登录工作台已就绪");
     } catch (e) {
       setError((e as Error).message);
@@ -630,13 +751,17 @@ export default function Home() {
             </strong>
           </div>
           <div className="topbar-actions">
+            <Button variant="ghost" size="sm" onClick={() => setView("tools")}>
+              <Settings2 size={14} />
+              模型设置
+            </Button>
             <span className="private-label">
               <ShieldCheck size={14} />
               免登录使用
             </span>
             <span className="mode-pill neutral">
               <BrainCircuit size={13} />
-              {boot?.config.model ? "AI 模型已配置" : "AI 未接入 · 规则运行"}
+              {activeModelLabel}
             </span>
           </div>
         </header>
@@ -755,8 +880,8 @@ export default function Home() {
               )}
               <span>
                 {mode === "demo"
-                  ? `演示数值均为构造数据，不代表真实证券。${boot?.config.model ? "规划可使用已配置模型。" : "当前未接入 AI，计划由规则生成。"}`
-                  : `行情优先使用扶摇，未配置时使用腾讯公开行情。${boot?.config.model ? "" : "当前模型未配置，将使用规则规划降级。"}`}
+                  ? `演示数值均为构造数据，不代表真实证券。${selectedHasModel ? "规划可使用已配置模型。" : "当前未接入 AI，计划由规则生成。"}`
+                  : `行情优先使用扶摇，未配置时使用腾讯公开行情。${selectedHasModel ? "" : "当前使用规则规划。"}`}
               </span>
             </div>
             <details className="advanced-options">
@@ -867,6 +992,40 @@ export default function Home() {
                 )}
               </div>
             </div>
+            {run.modelSelection?.source === "personal" &&
+              (!personalCredential ||
+                personalCredential.provider !== run.modelSelection.provider ||
+                personalCredential.model !== run.modelSelection.model) &&
+              !["completed"].includes(run.status) && (
+                <div className="inline-note">
+                  <AlertTriangle size={16} />
+                  <span>
+                    本研究使用个人模型 {run.modelSelection.model}
+                    。密钥只在页面内临时保留，继续执行前请重新配置。
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      if (run.modelSelection?.source !== "personal") return;
+                      setModelSource("personal");
+                      setModelProvider(run.modelSelection.provider);
+                      setModelName(run.modelSelection.model);
+                      setPersonalKey("");
+                      setView("tools");
+                    }}
+                  >
+                    填写密钥
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => action("model_rules")}
+                  >
+                    以规则继续
+                  </Button>
+                </div>
+              )}
             <div className="run-badges">
               <span
                 className={`mode-pill ${run.mode === "live" ? "neutral" : ""}`}
@@ -877,6 +1036,13 @@ export default function Home() {
                   <Database size={13} />
                 )}{" "}
                 {run.mode === "demo" ? "构造数据演示" : "真实数据研究"}
+              </span>
+              <span className="muted-tag">
+                {run.modelSelection?.source === "personal"
+                  ? "个人密钥"
+                  : run.modelSelection?.source === "rules"
+                    ? "规则模式"
+                    : "站点共享服务"}
               </span>
               <span className="muted-tag">
                 <BrainCircuit size={13} />
@@ -1460,15 +1626,194 @@ export default function Home() {
             <p className="page-intro">
               计划只能使用已注册的工具。服务未配置或数据不可用时，会保留明确的缺口。
             </p>
-            <div className="inline-note">
-              <BrainCircuit size={16} />
-              {boot?.config.model
-                ? "已配置模型服务；实际调用结果和降级原因会记录在研究运行记录中。"
-                : "AI 尚未接入：目标识别与计划由规则代码生成，报告由证据模板与确定性计算整理。需要配置服务地址、模型名称与 API key 后，才会调用真实大模型。"}
+            <div className="model-settings-card">
+              <div className="card-heading">
+                <div>
+                  <h2>模型设置</h2>
+                  <p>共享服务开箱即用，也可使用你自己的 API key。</p>
+                </div>
+                <BrainCircuit size={22} />
+              </div>
+              <label>
+                模型来源
+                <Select
+                  value={modelSource}
+                  onValueChange={(v) => {
+                    setModelSource(v as typeof modelSource);
+                    setModelMessage("");
+                    setModelTestOk(false);
+                  }}
+                >
+                  <SelectTrigger aria-label="模型来源">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="site">站点共享服务</SelectItem>
+                    <SelectItem value="personal">使用我的 API key</SelectItem>
+                    <SelectItem value="rules">
+                      仅使用规则，不调用模型
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </label>
+              {modelSource === "site" && (
+                <div className="model-help">
+                  <strong>
+                    {boot?.config.model
+                      ? `共享模型：${boot.config.modelName}`
+                      : "共享模型尚未配置"}
+                  </strong>
+                  <p>
+                    {boot?.config.model
+                      ? "访客不需要注册或填写密钥；实际调用失败时会说明原因。"
+                      : "需要站点维护者申请官方 API key 并设置服务端密钥。当前保持规则运行，没有真实模型调用。"}
+                  </p>
+                  <p>
+                    站点保护额度：全站每天{" "}
+                    {boot?.config.sharedLimits.dailyCalls ?? 40}{" "}
+                    次，每个工作台每天{" "}
+                    {boot?.config.sharedLimits.workspaceDailyCalls ?? 8}{" "}
+                    次。一次研究可能调用模型多次，免费服务还受供应商额度限制。
+                  </p>
+                </div>
+              )}
+              {modelSource === "personal" && (
+                <>
+                  <div className="model-fields">
+                    <label>
+                      服务商
+                      <Select
+                        value={modelProvider}
+                        onValueChange={(v) => {
+                          const provider = v as ModelProvider;
+                          setModelProvider(provider);
+                          setModelName(modelProviders[provider].defaultModel);
+                          setPersonalKey("");
+                          setModelMessage("");
+                          setModelTestOk(false);
+                        }}
+                      >
+                        <SelectTrigger aria-label="模型服务商">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {Object.entries(modelProviders).map(([id, p]) => (
+                            <SelectItem key={id} value={id}>
+                              {p.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                    <label>
+                      模型名称
+                      <Input
+                        aria-label="模型名称"
+                        value={modelName}
+                        maxLength={128}
+                        onChange={(e) => {
+                          setModelName(e.target.value);
+                          setModelTestOk(false);
+                          setModelMessage("");
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <label>
+                    API key
+                    <Input
+                      type="password"
+                      aria-label="个人 API key"
+                      autoComplete="off"
+                      value={personalKey}
+                      maxLength={512}
+                      placeholder="粘贴你在官方平台申请的 key"
+                      onChange={(e) => {
+                        setPersonalKey(e.target.value);
+                        setModelTestOk(false);
+                        setModelMessage("");
+                      }}
+                    />
+                  </label>
+                  <div className="model-help">
+                    <p>
+                      密钥仅保存在当前页面内存中，刷新或关闭页面后需要重新填写；不写入研究、数据库或浏览器存储。调用时通过
+                      HTTPS
+                      发送至本站后端，再转交所选服务商；研究目标和证据会发送给该服务商。
+                    </p>
+                    <a
+                      href={modelProviders[modelProvider].keyUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      在 {modelProviders[modelProvider].name} 官方控制台申请 key{" "}
+                      <ExternalLink size={13} />
+                    </a>
+                    <p>
+                      免费额度以供应商账户为准；填写 key
+                      不代表所有模型均可免费使用。
+                    </p>
+                  </div>
+                </>
+              )}
+              {modelSource === "rules" && (
+                <p className="model-help">
+                  目标识别、计划和报告由规则与计算代码驱动，不请求任何模型服务。
+                </p>
+              )}
+              {modelMessage && (
+                <p
+                  className={`model-result ${modelTestOk ? "success" : ""}`}
+                  role="status"
+                >
+                  {modelMessage}
+                </p>
+              )}
+              <div className="model-settings-actions">
+                <Button onClick={applyModel} disabled={modelBusy}>
+                  应用配置
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={testModel}
+                  disabled={
+                    modelBusy ||
+                    modelSource === "rules" ||
+                    (modelSource === "site" && !boot?.config.model)
+                  }
+                >
+                  {modelBusy ? (
+                    <Loader2 size={15} className="spin" />
+                  ) : (
+                    <Activity size={15} />
+                  )}
+                  测试连接
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    personalCredential = null;
+                    setPersonalKey("");
+                    if (modelSelection.source === "personal")
+                      setModelSelection({ source: "rules" });
+                    if (modelSource === "personal") setModelSource("rules");
+                    setModelMessage("");
+                    setModelTestOk(false);
+                    toast.success(
+                      "个人密钥已清除；个人模型来源的新研究默认改为规则模式。",
+                    );
+                  }}
+                >
+                  清除个人密钥
+                </Button>
+              </div>
+              <p className="model-footnote">
+                测试连接会发出一次模型请求，可能消耗额度。已有研究保留创建时的模型来源；仅应用配置不会验证密钥是否可用。
+              </p>
             </div>
             <div className="connection-grid">
               <Connection
-                title="规划与解释模型"
+                title="站点共享模型"
                 ready={!!boot?.config.model}
                 text={
                   boot?.config.model

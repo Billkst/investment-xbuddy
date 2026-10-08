@@ -6,14 +6,74 @@ import {
 } from "@/lib/research/workspace";
 import {
   createRun,
+  event,
+  checkpoint,
   type RuntimeConfig,
   type Run,
   type Mode,
 } from "@/lib/research/types";
 import { advanceRun, applyAction } from "@/lib/research/engine";
 import { toolRegistry } from "@/lib/research/tools";
+import { modelJson } from "@/lib/research/planner";
+import {
+  modelRuntime,
+  parseModelSelection,
+  type ModelSelection,
+} from "@/lib/research/model-settings";
 import * as store from "@/lib/research/store";
 export const dynamic = "force-dynamic";
+function limit(key: string, fallback: number, max: number) {
+  const values = env as unknown as Record<string, string | undefined>;
+  const n = Number(values[key] || process.env[key]);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, max) : fallback;
+}
+function sharedLimits() {
+  return {
+    dailyCalls: limit("SHARED_MODEL_DAILY_CALLS", 40, 5000),
+    dailyTokens: limit("SHARED_MODEL_DAILY_TOKENS", 180000, 2000000),
+    minuteCalls: limit("SHARED_MODEL_MINUTE_CALLS", 6, 60),
+    workspaceDailyCalls: limit("SHARED_MODEL_WORKSPACE_DAILY_CALLS", 8, 100),
+  };
+}
+function configuredModel(
+  owner: string,
+  selection: ModelSelection,
+  credential?: unknown,
+) {
+  const config = modelRuntime(selection, credential, runtime());
+  config.beforeModelCall = async (tokens) => {
+    const now = Date.now(),
+      day = Math.floor(now / 86400000),
+      minute = Math.floor(now / 60000);
+    const shared = selection.source === "site",
+      limits = sharedLimits();
+    const buckets = [
+      {
+        bucket: `workspace:${shared ? "shared" : "personal"}:${owner}:${day}`,
+        callLimit: shared ? limits.workspaceDailyCalls : 60,
+        tokenLimit: 250000,
+        expiresAt: (day + 2) * 86400000,
+      },
+    ];
+    if (shared)
+      buckets.push(
+        {
+          bucket: `shared:day:${day}`,
+          callLimit: limits.dailyCalls,
+          tokenLimit: limits.dailyTokens,
+          expiresAt: (day + 2) * 86400000,
+        },
+        {
+          bucket: `shared:minute:${minute}`,
+          callLimit: limits.minuteCalls,
+          tokenLimit: 40000,
+          expiresAt: (minute + 2) * 60000,
+        },
+      );
+    await store.reserveModelBudget(buckets, tokens);
+  };
+  return config;
+}
 function runtime(): RuntimeConfig {
   const values = env as unknown as Record<string, string | undefined>;
   const read = (key: string) => values[key] || process.env[key];
@@ -22,7 +82,7 @@ function runtime(): RuntimeConfig {
     llmApiKey: read("LLM_API_KEY"),
     llmModel: read("LLM_MODEL"),
     fuyaoApiKey: read("FUYAO_API_KEY"),
-    contextLimit: Number(read("CONTEXT_LIMIT")) || 7000,
+    contextLimit: limit("CONTEXT_LIMIT", 16000, 128000),
   };
 }
 function json(data: unknown, status = 200, cookie?: string) {
@@ -95,6 +155,7 @@ export async function GET(request: Request) {
           fuyao: !!config.fuyaoApiKey,
           publicMarket: true,
           contextLimit: config.contextLimit,
+          sharedLimits: sharedLimits(),
         },
         tools: toolRegistry,
       },
@@ -120,6 +181,31 @@ export async function POST(request: Request) {
     const text = await request.text();
     if (text.length > 12000) return json({ error: "请求内容过长" }, 413);
     const body = JSON.parse(text) as Record<string, unknown>;
+    if (body.action === "model_test") {
+      const selection = parseModelSelection(body.modelSelection);
+      const config = configuredModel(owner, selection, body.modelCredential);
+      if (!config.llmApiKey || !config.llmBaseUrl || !config.llmModel)
+        throw new Error(
+          "当前来源未配置模型服务，请填写个人密钥或由维护者配置共享服务。",
+        );
+      const probe = createRun("验证模型 JSON 连接", "demo");
+      const result = (await modelJson(
+        probe,
+        config,
+        '仅返回 JSON 对象 {"ok":true}，不添加其他文字。',
+        "请验证 JSON 输出。",
+        256,
+      )) as { ok?: boolean };
+      if (result?.ok !== true)
+        throw new Error(
+          "服务已响应，但未通过 JSON 输出检查；请确认模型支持 JSON 模式。",
+        );
+      return json({
+        ok: true,
+        model: config.llmModel,
+        source: selection.source,
+      });
+    }
     if (body.action === "workspace_clear") {
       await store.clearWorkspace(owner);
       const workspace = await newWorkspace(request.url);
@@ -148,6 +234,8 @@ export async function POST(request: Request) {
         await store.listMemories(owner),
         { maxCalls, fault },
       );
+      run.modelSelection = parseModelSelection(body.modelSelection);
+      modelRuntime(run.modelSelection, body.modelCredential, runtime());
       await store.insertRun(owner, run);
       return json({ run }, 201);
     }
@@ -177,10 +265,24 @@ export async function POST(request: Request) {
     const run = await store.withRunLock(
       owner,
       id,
-      async (current, onProgress) =>
-        body.action === "advance"
-          ? advanceRun(current, { ...runtime(), onProgress })
-          : applyAction(current, String(body.action), body),
+      async (current, onProgress) => {
+        if (body.action === "model_rules") {
+          current.modelSelection = { source: "rules" };
+          event(current, "model_source", "用户选择规则模式继续研究");
+          checkpoint(current);
+          return current;
+        }
+        return body.action === "advance"
+          ? advanceRun(current, {
+              ...configuredModel(
+                owner,
+                current.modelSelection ?? { source: "site" },
+                body.modelCredential,
+              ),
+              onProgress,
+            })
+          : applyAction(current, String(body.action), body);
+      },
     );
     return json({ run });
   } catch (e) {

@@ -1,5 +1,17 @@
 import { test, expect } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.goto("/");
+  await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  await page.getByRole("combobox", { name: "模型来源", exact: true }).click();
+  await page
+    .getByRole("option", { name: "仅使用规则，不调用模型", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用配置", exact: true }).click();
+  await page.getByRole("button", { name: "新建研究", exact: true }).click();
+});
+
 test("全部功能免登录开放，工作台与偏好在新标签页恢复并与其他访客隔离", async ({
   page,
   context,
@@ -7,11 +19,11 @@ test("全部功能免登录开放，工作台与偏好在新标签页恢复并�
 }) => {
   const requests: string[] = [];
   page.on("request", (r) => requests.push(r.url()));
-  await page.goto("/");
+
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   await expect(page.getByRole("link", { name: /登录/ })).toHaveCount(0);
   await expect(
-    page.getByText("AI 未接入 · 规则运行", { exact: true }),
+    page.getByText("规则运行 · 无模型调用", { exact: true }),
   ).toBeVisible();
   await page.getByRole("combobox", { name: "数据模式", exact: true }).click();
   await expect(
@@ -79,8 +91,17 @@ test("禁用草稿存储不影响免登录执行，手机入口无需账号", as
       throw new Error("storage denied");
     };
   });
+  await page.reload();
+  await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  await page.getByRole("combobox", { name: "模型来源", exact: true }).click();
+  await page
+    .getByRole("option", { name: "仅使用规则，不调用模型", exact: true })
+    .click();
+  await page.getByRole("button", { name: "应用配置", exact: true }).click();
+  await page.getByRole("button", { name: "新建研究", exact: true }).click();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/");
+
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   await page
     .getByRole("textbox", { name: "研究目标" })

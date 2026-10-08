@@ -15,6 +15,20 @@
       "when": 1791453184744,
       "tag": "0001_burly_plazm",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1791454917626,
+      "tag": "0002_orange_zzzax",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791455328257,
+      "tag": "0003_chemical_night_thrasher",
+      "breakpoints": true
     }
   ]
 }

@@ -2350,3 +2350,75 @@ button:focus-visible {
     margin-left: 28px;
   }
 }
+.model-settings-card {
+  padding: 24px;
+  margin: 24px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: white;
+}
+.model-settings-card > label,
+.model-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  margin: 18px 0;
+}
+.model-fields {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 20px;
+}
+.model-settings-card [data-slot="select-trigger"] {
+  width: 100%;
+}
+.model-help {
+  margin: 14px 0;
+  color: #52647b;
+  font-size: 14px;
+  line-height: 1.8;
+}
+.model-help p + p {
+  margin-top: 8px;
+}
+.model-help a {
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+}
+.model-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 20px;
+}
+.model-footnote {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.7;
+  margin-top: 12px;
+}
+.model-result {
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff1ef;
+  color: #97443b;
+  font-size: 14px;
+  line-height: 1.7;
+}
+.model-result.success {
+  background: #edf8f2;
+  color: #277258;
+}
+@media (max-width: 640px) {
+  .model-fields {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .model-settings-card {
+    padding: 18px;
+  }
+}

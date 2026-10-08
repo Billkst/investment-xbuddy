@@ -7,6 +7,8 @@ assert.ok(cookie, "anonymous workspace cookie");
 assert.match(initial.headers.get("set-cookie"), /HttpOnly/);
 assert.match(initial.headers.get("set-cookie"), /SameSite=Lax/);
 async function api(body, id, session = cookie) {
+  if (body?.action === "create")
+    body = { ...body, modelSelection: { source: "rules" } };
   const r = await fetch(base + "/api/research" + (id ? "?id=" + id : ""), {
     ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
     headers: {

@@ -1,4 +1,26 @@
-import { sqliteTable, text, integer, index } from "drizzle-orm/sqlite-core";
+import {
+  sqliteTable,
+  text,
+  integer,
+  index,
+  check,
+} from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
+export const modelUsage = sqliteTable(
+  "model_usage",
+  {
+    bucket: text("bucket").primaryKey(),
+    calls: integer("calls").notNull().default(0),
+    tokens: integer("tokens").notNull().default(0),
+    expiresAt: integer("expires_at").notNull(),
+    callLimit: integer("call_limit").notNull().default(5000),
+    tokenLimit: integer("token_limit").notNull().default(2000000),
+  },
+  (t) => [
+    check("model_calls_limit", sql`${t.calls} <= ${t.callLimit}`),
+    check("model_tokens_limit", sql`${t.tokens} <= ${t.tokenLimit}`),
+  ],
+);
 export const researchWorkspaces = sqliteTable("research_workspaces", {
   id: text("id").primaryKey(),
   expiresAt: integer("expires_at").notNull(),

@@ -7,6 +7,7 @@ import {
   type Step,
   type ToolName,
   consumeRequest,
+  BudgetError,
   StopError,
 } from "./types.ts";
 const known: Security[] = [
@@ -232,7 +233,11 @@ export async function modelJson(
 ): Promise<unknown> {
   if (!config.llmApiKey || !config.llmBaseUrl || !config.llmModel)
     throw new Error("模型服务未配置");
-  const estimatedInput = Math.ceil((system.length + input.length) / 2);
+  // UTF-8 byte bound plus message framing: conservative for supported BPE
+  // models, including Chinese. This reserves capacity, not a billing estimate.
+  const estimatedInput =
+    new TextEncoder().encode(system + input).byteLength + 128;
+  if (run.usage.calls >= run.budget.maxCalls) throw new BudgetError();
   if (run.usage.tokens + estimatedInput + maxTokens > run.budget.maxTokens)
     throw new Error("模型 token 预算不足，停止新增模型调用");
   const url = new URL(config.llmBaseUrl);
@@ -243,6 +248,7 @@ export async function modelJson(
   )
     throw new Error("模型地址必须使用 HTTPS");
   await config.onProgress?.(run);
+  await config.beforeModelCall?.(estimatedInput + maxTokens);
   consumeRequest(run);
   run.usage.modelCalls++;
   run.usage.tokens += estimatedInput + maxTokens;
@@ -251,6 +257,7 @@ export async function modelJson(
     config.llmBaseUrl.replace(/\/$/, "") + "/chat/completions",
     {
       method: "POST",
+      redirect: "manual",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${config.llmApiKey}`,
@@ -264,11 +271,22 @@ export async function modelJson(
         temperature: 0.2,
         max_tokens: maxTokens,
         response_format: { type: "json_object" },
+        ...(url.hostname === "api.groq.com" &&
+        config.llmModel.startsWith("openai/gpt-oss-")
+          ? { reasoning_effort: "low", include_reasoning: false }
+          : {}),
       }),
       signal: AbortSignal.timeout(25000),
     },
   );
-  if (!response.ok) throw new Error(`模型接口返回 HTTP ${response.status}`);
+  if (!response.ok)
+    throw new Error(
+      response.status === 429
+        ? "模型服务额度已用尽或请求过快（HTTP 429），请稍后重试或使用规则模式。"
+        : response.status === 401 || response.status === 403
+          ? `模型服务拒绝访问（HTTP ${response.status}），请检查密钥和模型权限。`
+          : `模型接口返回 HTTP ${response.status}`,
+    );
   const data = (await response.json()) as {
     usage?: { total_tokens?: number };
     choices?: { message?: { content?: string } }[];

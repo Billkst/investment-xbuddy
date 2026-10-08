@@ -1,3 +1,4 @@
+import type { ModelSelection } from "./model-settings.ts";
 export type Mode = "live" | "demo";
 export type RunStatus =
   | "planning"
@@ -113,6 +114,7 @@ export interface Run {
   evidence: Evidence[];
   report?: Report;
   planner: "model" | "rules" | "pending";
+  modelSelection?: ModelSelection;
   planVersion: number;
   approval?: Approval;
   scopeApproved: boolean;
@@ -151,6 +153,7 @@ export interface RuntimeConfig {
   fuyaoApiKey?: string;
   contextLimit: number;
   onProgress?: (run: Run) => Promise<void>;
+  beforeModelCall?: (reservedTokens: number) => Promise<void>;
 }
 export interface PlannerResult {
   intent: Intent;
@@ -228,7 +231,7 @@ export function createRun(
     scopeApproved: false,
     budget: {
       maxCalls: options.maxCalls ?? 10,
-      maxTokens: 14000,
+      maxTokens: 48000,
       maxMs: 240000,
     },
     usage: { calls: 0, tokens: 0, durationMs: 0, modelCalls: 0 },
