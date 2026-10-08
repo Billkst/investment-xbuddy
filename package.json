@@ -19,6 +19,7 @@
     "db:local": "node scripts/db-local.mjs",
     "format": "prettier --write app lib/research db tests docs README.md",
     "test:workspace": "node --experimental-strip-types tests/workspace.test.ts",
+    "test:ifind": "node --experimental-strip-types tests/ifind.test.ts",
     "test:model": "node --experimental-strip-types tests/model-settings.test.ts"
   },
   "dependencies": {

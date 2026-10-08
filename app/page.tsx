@@ -95,6 +95,7 @@ import type {
   Finding,
 } from "@/lib/research/types";
 import { toolRegistry } from "@/lib/research/tools";
+import type { IfindConnection } from "@/lib/integrations/ifind";
 import {
   modelProviders,
   parseModelSelection,
@@ -117,10 +118,12 @@ type Bootstrap = {
   access: "anonymous";
   runs: Brief[];
   memories: Memory[];
+  ifindConnection: IfindConnection | null;
   config: {
     model: boolean;
     modelName: string | null;
     fuyao: boolean;
+    ifind: boolean;
     publicMarket: boolean;
     contextLimit: number;
     sharedLimits: {
@@ -1807,11 +1810,16 @@ export default function Home() {
                     : "尚未提供金融数据 key。模型 API key 不能用于获取财报。"
                 }
               />
-              <Connection
-                title="iFinD MCP"
-                status="未接入"
-                ready={false}
-                text="尚未接入，未参与当前研究。需同花顺或 iFinD 账号的 MCP 密钥与工具权限。"
+              <IfindSettings
+                configured={!!boot?.config.ifind}
+                connection={boot?.ifindConnection ?? null}
+                onChange={(connection) =>
+                  setBoot((current) =>
+                    current
+                      ? { ...current, ifindConnection: connection }
+                      : current,
+                  )
+                }
               />
               <Connection
                 title="腾讯公开行情"
@@ -1945,6 +1953,99 @@ export default function Home() {
         </SheetContent>
       </Sheet>
     </SidebarProvider>
+  );
+}
+function IfindSettings({
+  configured,
+  connection,
+  onChange,
+}: {
+  configured: boolean;
+  connection: IfindConnection | null;
+  onChange: (connection: IfindConnection) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function connect() {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api<{ connection: IfindConnection }>({
+        action: "ifind_connect",
+      });
+      onChange(result.connection);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <div>
+      <Connection
+        title="iFinD MCP"
+        ready={connection?.status === "connected"}
+        status={
+          !configured
+            ? "待配置"
+            : connection?.status === "connected"
+              ? "已连接"
+              : connection?.status === "error"
+                ? "验证失败"
+                : "待验证"
+        }
+        text={
+          !configured
+            ? "维护者需配置独立的 iFinD MCP 密钥。"
+            : (connection?.message ??
+              (connection?.status === "connected"
+                ? `已发现 ${connection.tools.length} 个账户可用工具。`
+                : "密钥已配置，点击验证以获取账户工具。"))
+        }
+      />
+      <div className="ifind-controls">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!configured || busy}
+          onClick={connect}
+        >
+          {busy ? (
+            <Loader2 size={14} className="animate-spin" />
+          ) : (
+            <Link2 size={14} />
+          )}
+          {busy ? "正在连接…" : "验证连接并发现工具"}
+        </Button>
+        <p>先验证连接，再接入研究流程；当前研究尚未使用 iFinD 数据。</p>
+        {connection && (
+          <p>
+            验证时间：{dateLabel(connection.checkedAt)}
+            {connection.protocolVersion &&
+              ` · MCP ${connection.protocolVersion}`}
+          </p>
+        )}
+        {error && <p role="alert">{error}</p>}
+        {connection?.status === "connected" && (
+          <details className="settings-details">
+            <summary>
+              账户工具清单（{connection.tools.length}）<ChevronDown size={15} />
+            </summary>
+            {connection.tools.length === 0 && (
+              <p>连接成功，但此账户暂未返回可用工具。</p>
+            )}
+            {connection.tools.map((tool) => (
+              <details key={tool.name} className="ifind-tool">
+                <summary>{tool.title || tool.name}</summary>
+                <code>{tool.name}</code>
+                <p>{tool.description || "服务未提供说明"}</p>
+                <pre>{JSON.stringify(tool.inputSchema, null, 2)}</pre>
+              </details>
+            ))}
+          </details>
+        )}
+      </div>
+    </div>
   );
 }
 function Connection({

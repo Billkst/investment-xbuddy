@@ -151,6 +151,7 @@ export interface RuntimeConfig {
   llmApiKey?: string;
   llmModel?: string;
   fuyaoApiKey?: string;
+  ifindMcpApiKey?: string;
   contextLimit: number;
   onProgress?: (run: Run) => Promise<void>;
   beforeModelCall?: (reservedTokens: number) => Promise<void>;

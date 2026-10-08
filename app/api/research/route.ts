@@ -21,6 +21,11 @@ import {
   type ModelSelection,
 } from "@/lib/research/model-settings";
 import * as store from "@/lib/research/store";
+import {
+  discoverIfind,
+  credentialFingerprint,
+  type IfindConnection,
+} from "@/lib/integrations/ifind";
 export const dynamic = "force-dynamic";
 function limit(key: string, fallback: number, max: number) {
   const values = env as unknown as Record<string, string | undefined>;
@@ -82,6 +87,7 @@ function runtime(): RuntimeConfig {
     llmApiKey: read("LLM_API_KEY"),
     llmModel: read("LLM_MODEL"),
     fuyaoApiKey: read("FUYAO_API_KEY"),
+    ifindMcpApiKey: read("IFIND_MCP_API_KEY"),
     contextLimit: limit("CONTEXT_LIMIT", 16000, 128000),
   };
 }
@@ -154,10 +160,17 @@ export async function GET(request: Request) {
           (run) => run.mode === "live",
         ),
         memories: await store.listMemories(owner),
+        ifindConnection: config.ifindMcpApiKey
+          ? await store.getServiceConnection<IfindConnection>(
+              "ifind",
+              await credentialFingerprint(config.ifindMcpApiKey),
+            )
+          : null,
         config: {
           model: !!(config.llmApiKey && config.llmBaseUrl && config.llmModel),
           modelName: config.llmModel ?? null,
           fuyao: !!config.fuyaoApiKey,
+          ifind: !!config.ifindMcpApiKey,
           publicMarket: true,
           contextLimit: config.contextLimit,
           sharedLimits: sharedLimits(),
@@ -186,6 +199,61 @@ export async function POST(request: Request) {
     const text = await request.text();
     if (text.length > 12000) return json({ error: "请求内容过长" }, 413);
     const body = JSON.parse(text) as Record<string, unknown>;
+    if (body.action === "ifind_connect") {
+      const key = runtime().ifindMcpApiKey;
+      if (!key)
+        throw new Error(
+          "请由维护者在服务端配置 IFIND_MCP_API_KEY，然后验证连接。",
+        );
+      const fingerprint = await credentialFingerprint(key);
+      const cached = await store.getServiceConnection<IfindConnection>(
+        "ifind",
+        fingerprint,
+      );
+      if (cached && Date.now() - Date.parse(cached.checkedAt) < 30000)
+        return json({ connection: cached });
+      const minute = Math.floor(Date.now() / 60000),
+        day = Math.floor(Date.now() / 86400000);
+      await store.reserveModelBudget(
+        [
+          {
+            bucket: `ifind:minute:${minute}`,
+            callLimit: 6,
+            tokenLimit: 1,
+            expiresAt: (minute + 2) * 60000,
+          },
+          {
+            bucket: `ifind:day:${day}`,
+            callLimit: 60,
+            tokenLimit: 1,
+            expiresAt: (day + 2) * 86400000,
+          },
+        ],
+        0,
+        "iFinD 连接验证已达到站点频率限制，请稍后重试。",
+      );
+      let connection: IfindConnection;
+      try {
+        connection = await discoverIfind(key);
+      } catch (error) {
+        // Only our bounded messages are public; never return upstream bodies or transport details.
+        const message =
+          error instanceof Error &&
+          /^(iFinD|此 iFinD|无法连接 iFinD)/.test(error.message)
+            ? error.message.replaceAll(key, "[redacted]").slice(0, 350)
+            : "iFinD 连接中断，请稍后重新验证。";
+        connection = {
+          status: "error",
+          checkedAt: new Date().toISOString(),
+          message,
+          tools: [],
+          complete: false,
+          researchEnabled: false,
+        };
+      }
+      await store.saveServiceConnection("ifind", fingerprint, connection);
+      return json({ connection });
+    }
     if (body.action === "model_test") {
       const selection = parseModelSelection(body.modelSelection);
       const config = configuredModel(owner, selection, body.modelCredential);

@@ -22,6 +22,7 @@ export async function hasWorkspace(owner: string) {
 export async function reserveModelBudget(
   buckets: ModelBudgetBucket[],
   tokens: number,
+  quotaMessage = "本次模型调用已达到工作台或站点的额度限制，请稍后重试或切换规则模式。",
 ) {
   await db()
     .prepare("DELETE FROM model_usage WHERE expires_at<?")
@@ -37,9 +38,7 @@ export async function reserveModelBudget(
     );
   } catch (error) {
     if (error instanceof Error && /CHECK constraint failed/.test(error.message))
-      throw new Error(
-        "本次模型调用已达到工作台或站点的额度限制，请稍后重试或切换规则模式。",
-      );
+      throw new Error(quotaMessage);
     throw error;
   }
 }
@@ -256,5 +255,30 @@ export async function deleteMemory(owner: string, id: string) {
   await db()
     .prepare("DELETE FROM research_memories WHERE owner=? AND id=?")
     .bind(owner, id)
+    .run();
+}
+
+export async function getServiceConnection<T>(
+  id: string,
+  credentialHash: string,
+): Promise<T | null> {
+  const row = await db()
+    .prepare(
+      "SELECT state FROM service_connections WHERE id=? AND credential_hash=?",
+    )
+    .bind(id, credentialHash)
+    .first<{ state: string }>();
+  return row ? (JSON.parse(row.state) as T) : null;
+}
+export async function saveServiceConnection(
+  id: string,
+  credentialHash: string,
+  state: unknown,
+) {
+  await db()
+    .prepare(
+      "INSERT INTO service_connections (id,credential_hash,state) VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET credential_hash=excluded.credential_hash,state=excluded.state",
+    )
+    .bind(id, credentialHash, JSON.stringify(state))
     .run();
 }

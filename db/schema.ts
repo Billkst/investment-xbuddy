@@ -6,6 +6,11 @@ import {
   check,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
+export const serviceConnections = sqliteTable("service_connections", {
+  id: text("id").primaryKey(),
+  credentialHash: text("credential_hash").notNull(),
+  state: text("state").notNull(),
+});
 export const modelUsage = sqliteTable(
   "model_usage",
   {
