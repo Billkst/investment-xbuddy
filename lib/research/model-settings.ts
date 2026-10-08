@@ -1,6 +1,48 @@
 import type { RuntimeConfig } from "./types.ts";
 
 export const modelProviders = {
+  deepseek: {
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com",
+    defaultModel: "deepseek-flash",
+    keyUrl: "https://platform.deepseek.com/",
+    requestOptions: { thinking: { type: "disabled" } },
+  },
+  qwen: {
+    name: "通义千问 · 阿里云百炼",
+    baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    defaultModel: "qwen-flash",
+    keyUrl: "https://bailian.console.aliyun.com/",
+    requestOptions: { enable_thinking: false },
+  },
+  glm: {
+    name: "智谱 GLM",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+    defaultModel: "glm-4.7-flash",
+    keyUrl: "https://open.bigmodel.cn/",
+    requestOptions: { thinking: { type: "disabled" } },
+  },
+  kimi: {
+    name: "Kimi · 月之暗面",
+    baseUrl: "https://api.moonshot.cn/v1",
+    defaultModel: "kimi-k2.6",
+    keyUrl: "https://platform.kimi.com/",
+    requestOptions: { thinking: { type: "disabled" } },
+  },
+  siliconflow: {
+    name: "硅基流动 SiliconFlow",
+    baseUrl: "https://api.siliconflow.cn/v1",
+    defaultModel: "deepseek-ai/DeepSeek-V4-Flash",
+    keyUrl: "https://cloud.siliconflow.cn/",
+    requestOptions: { enable_thinking: false },
+  },
+  doubao: {
+    name: "豆包 · 火山方舟",
+    baseUrl: "https://ark.cn-beijing.volces.com/api/v3",
+    defaultModel: "doubao-seed-2-1-pro-260915",
+    keyUrl: "https://console.volcengine.com/ark/",
+    requestOptions: { thinking: { type: "disabled" } },
+  },
   groq: {
     name: "Groq",
     baseUrl: "https://api.groq.com/openai/v1",
@@ -14,6 +56,26 @@ export const modelProviders = {
     keyUrl: "https://openrouter.ai/settings/keys",
   },
 } as const;
+export function modelRequestOptions(
+  baseUrl: string,
+  model: string,
+): Record<string, unknown> {
+  const provider = Object.values(modelProviders).find(
+    (p) => p.baseUrl.replace(/\/$/, "") === baseUrl.replace(/\/$/, ""),
+  );
+  if (
+    provider &&
+    provider.defaultModel === model &&
+    "requestOptions" in provider
+  )
+    return provider.requestOptions;
+  if (
+    new URL(baseUrl).hostname === "api.groq.com" &&
+    model.startsWith("openai/gpt-oss-")
+  )
+    return { reasoning_effort: "low", include_reasoning: false };
+  return {};
+}
 export type ModelProvider = keyof typeof modelProviders;
 export type ModelSelection =
   | { source: "site" }

@@ -21,7 +21,7 @@ test("访客可配置个人模型，测试连接、清除密钥且不意外开�
     if (body?.action === "model_test") {
       expect(body.modelCredential.apiKey).toBe("test-ui-key-not-a-real-key");
       expect(body.modelSelection).not.toHaveProperty("apiKey");
-      await route.fulfill({ json: { ok: true, model: "openai/gpt-oss-120b" } });
+      await route.fulfill({ json: { ok: true, model: "deepseek-flash" } });
     } else await route.continue();
   });
   await page.getByRole("button", { name: "测试连接", exact: true }).click();

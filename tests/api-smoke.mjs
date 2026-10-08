@@ -8,7 +8,7 @@ assert.match(initial.headers.get("set-cookie"), /HttpOnly/);
 assert.match(initial.headers.get("set-cookie"), /SameSite=Lax/);
 async function api(body, id, session = cookie) {
   if (body?.action === "create")
-    body = { ...body, modelSelection: { source: "rules" } };
+    body = { ...body, mode: "live", modelSelection: { source: "rules" } };
   const r = await fetch(base + "/api/research" + (id ? "?id=" + id : ""), {
     ...(body ? { method: "POST", body: JSON.stringify(body) } : {}),
     headers: {
@@ -20,6 +20,27 @@ async function api(body, id, session = cookie) {
   if (!r.ok) throw Object.assign(new Error(data.error), { status: r.status });
   return data;
 }
+for (const body of [
+  { action: "create", goal: "研究贵州茅台", mode: "demo" },
+  {
+    action: "create",
+    goal: "研究贵州茅台",
+    mode: "live",
+    fault: "tool_failure",
+  },
+]) {
+  const rejected = await fetch(base + "/api/research", {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Origin: base,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  assert.equal(rejected.status, 400);
+}
+checks.push("public API rejects synthetic data and fault injection");
 const boot = await api();
 assert.equal(boot.access, "anonymous");
 assert.ok(!("user" in boot) && !("owner" in boot));
@@ -214,7 +235,7 @@ const result = {
   passed: checks.length,
   checks,
   completedRun: run.id,
-  financialSource: "synthetic",
+  financialSource: "Fuyao real account",
   realModelTested: false,
 };
 console.log(JSON.stringify(result, null, 2));

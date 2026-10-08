@@ -27,7 +27,7 @@ let run = (
   await api({
     action: "create",
     goal: "研究贵州茅台近一个月的股价表现、最大回撤和波动风险，输出简短摘要",
-    mode: "demo",
+    mode: "live",
     modelSelection: { source: "site" },
   })
 ).run;
@@ -46,7 +46,7 @@ assert.ok(
   run.report.findings.some((f) => f.kind === "inference"),
   "real model report interpretation",
 );
-assert.ok(run.evidence.every((e) => e.quality === "demo"));
+assert.ok(run.evidence.every((e) => e.quality !== "demo"));
 assert.ok(
   run.report.findings.every((f) =>
     f.evidenceIds.every((id) => run.evidence.some((e) => e.id === id)),
@@ -62,7 +62,7 @@ console.log(
     evidence: run.evidence.length,
     inferences: run.report.findings.filter((f) => f.kind === "inference")
       .length,
-    data: "synthetic, labelled demo",
+    data: "real financial source",
   }),
 );
 // BYOK metadata is persisted, the request's key and arbitrary URL are not.
@@ -71,7 +71,7 @@ let personal = (
   await api({
     action: "create",
     goal: "茅台走势",
-    mode: "demo",
+    mode: "live",
     modelSelection: {
       source: "personal",
       provider: "groq",

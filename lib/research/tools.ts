@@ -200,7 +200,20 @@ async function requestJson(
       return data;
     } catch (e) {
       if (e instanceof BudgetError || e instanceof StopError) throw e;
-      const message = e instanceof Error ? e.message : "网络错误";
+      const cause =
+        e instanceof Error
+          ? (e as Error & { cause?: { code?: unknown } }).cause?.code
+          : undefined;
+      const code =
+        typeof cause === "string" && /^[A-Z0-9_]{2,50}$/.test(cause)
+          ? cause
+          : "";
+      const message =
+        e instanceof Error && e.message === "fetch failed"
+          ? `数据源网络连接失败${code ? `（${code}）` : ""}，请稍后重试。`
+          : e instanceof Error
+            ? e.message
+            : "网络错误";
       event(run, "request_error", `第 ${attempt + 1} 次数据请求失败`, message);
       if (attempt === 1 || message.startsWith("AUTH:"))
         throw new Error(message);
@@ -498,7 +511,14 @@ async function fuyaoData(
             ["pe_ttm", "市盈率 TTM", "倍", "滚动十二个月利润口径"],
             ["pb_mrq", "市净率 MRQ", "倍", "最近报告期净资产口径"],
           ]
-        : [["last_price", "最新价", "元/股", "行情快照"]];
+        : [
+            [
+              "last_price",
+              "最新价",
+              s.kind === "index" ? "点" : "元/股",
+              "行情快照",
+            ],
+          ];
     return fields.map(([field, label, unit, basis]) =>
       base(step, run, {
         ...common,
@@ -508,7 +528,7 @@ async function fuyaoData(
         asOf: asDate(row.timestamp ?? data.timestamp),
         field: `data.item[thscode=${s.code}].${field}`,
         basis,
-        raw: row,
+        raw: response,
       }),
     );
   }
@@ -550,7 +570,7 @@ async function fuyaoData(
           asOf: asDate(row.period_end_ms),
           field: `data.item[period_end_ms=${row.period_end_ms}].${field}`,
           basis: `年度合并财报；报告期末 ${asDate(row.period_end_ms)}；披露日 ${asDate(row.report_date_ms)}`,
-          raw: row,
+          raw: { ...response, data: { ...data, item: [row] } },
         }),
       );
   }

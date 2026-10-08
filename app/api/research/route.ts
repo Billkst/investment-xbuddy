@@ -135,7 +135,10 @@ export async function GET(request: Request) {
     const id = new URL(request.url).searchParams.get("id");
     if (id) {
       if (!owner) return sessionRequired();
-      return json(await store.getRun(owner, id));
+      const saved = await store.getRun(owner, id);
+      if (saved.run.mode === "demo")
+        return json({ error: "旧版演示研究已归档，请新建真实数据研究。" }, 410);
+      return json(saved);
     }
     let cookie: string | undefined;
     if (!owner) {
@@ -147,7 +150,9 @@ export async function GET(request: Request) {
     return json(
       {
         access: "anonymous",
-        runs: await store.listRuns(owner),
+        runs: (await store.listRuns(owner)).filter(
+          (run) => run.mode === "live",
+        ),
         memories: await store.listMemories(owner),
         config: {
           model: !!(config.llmApiKey && config.llmBaseUrl && config.llmModel),
@@ -216,12 +221,14 @@ export async function POST(request: Request) {
       const goal = typeof body.goal === "string" ? body.goal.trim() : "";
       if (goal.length < 4 || goal.length > 2000)
         throw new Error("研究目标需为4至2000字");
-      if (!["demo", "live"].includes(String(body.mode)))
-        throw new Error("请选择有效的数据模式");
+      const mode = body.mode ?? "live";
+      if (mode !== "live")
+        throw new Error("研究空间仅使用真实金融数据，构造数据入口已移除。");
       const maxCalls = Number(body.maxCalls ?? 10);
       if (!Number.isInteger(maxCalls) || maxCalls < 1 || maxCalls > 30)
         throw new Error("调用预算需为1至30的整数");
       const fault = (body.fault ?? "none") as Run["fault"];
+      if (fault !== "none") throw new Error("故障演练仅用于本地自动化测试。");
       if (
         !["none", "tool_failure", "missing_data", "model_failure"].includes(
           fault,
@@ -230,7 +237,7 @@ export async function POST(request: Request) {
         throw new Error("无效的故障演练类型");
       const run = createRun(
         goal,
-        body.mode as Mode,
+        mode as Mode,
         await store.listMemories(owner),
         { maxCalls, fault },
       );
@@ -257,15 +264,22 @@ export async function POST(request: Request) {
     }
     const id = String(body.id ?? "");
     if (!/^run_[a-f0-9]{16}$/.test(id)) throw new Error("无效的研究ID");
-    if (body.action === "pause" && (await store.requestStop(owner, id)))
-      return json({
-        ...(await store.getRun(owner, id)),
-        stopRequested: true,
-      });
+    if (body.action === "pause") {
+      const current = await store.getRun(owner, id);
+      if (current.run.mode === "demo")
+        throw new Error("旧版演示研究已归档，请新建真实数据研究。");
+      if (await store.requestStop(owner, id))
+        return json({
+          ...(await store.getRun(owner, id)),
+          stopRequested: true,
+        });
+    }
     const run = await store.withRunLock(
       owner,
       id,
       async (current, onProgress) => {
+        if (current.mode === "demo")
+          throw new Error("旧版演示研究已归档，请新建真实数据研究。");
         if (body.action === "model_rules") {
           current.modelSelection = { source: "rules" };
           event(current, "model_source", "用户选择规则模式继续研究");

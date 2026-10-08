@@ -4,6 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import {
   parseModelSelection,
+  modelProviders,
+  modelRequestOptions,
   modelRuntime,
 } from "../lib/research/model-settings.ts";
 import { reserveModelSql } from "../lib/research/model-budget.ts";
@@ -198,4 +200,62 @@ test("report projection preserves provenance, endpoints and sample counts after 
     }
   }
   assert.equal(JSON.stringify(run.evidence), raw);
+});
+
+test("国产模型使用各自官方地址与 JSON 参数，Kimi 不注入不兼容采样设置", async () => {
+  const original = globalThis.fetch;
+  try {
+    for (const provider of [
+      "deepseek",
+      "qwen",
+      "glm",
+      "kimi",
+      "siliconflow",
+      "doubao",
+    ] as const) {
+      const preset = modelProviders[provider];
+      const selection = parseModelSelection({
+        source: "personal",
+        provider,
+        model: preset.defaultModel,
+      });
+      const config = modelRuntime(
+        selection,
+        { provider, model: preset.defaultModel, apiKey: credential.apiKey },
+        site,
+      );
+      globalThis.fetch = async (url, init) => {
+        assert.equal(String(url), preset.baseUrl + "/chat/completions");
+        const body = JSON.parse(String(init?.body));
+        assert.deepEqual(body.response_format, { type: "json_object" });
+        assert.equal(body.temperature, undefined);
+        assert.equal(body.model, preset.defaultModel);
+        if (provider === "qwen" || provider === "siliconflow")
+          assert.equal(body.enable_thinking, false);
+        else assert.deepEqual(body.thinking, { type: "disabled" });
+        return Response.json({
+          choices: [{ message: { content: '{"ok":true}' } }],
+        });
+      };
+      assert.deepEqual(
+        await modelJson(
+          createRun("研究茅台", "live"),
+          config,
+          "输出JSON",
+          "研究",
+        ),
+        { ok: true },
+      );
+    }
+    assert.deepEqual(
+      modelRequestOptions(modelProviders.glm.baseUrl, "glm-5.3"),
+      {},
+    );
+    assert.deepEqual(
+      modelRequestOptions(modelProviders.doubao.baseUrl, "ep-custom"),
+      {},
+    );
+  } finally {
+    globalThis.fetch = original;
+  }
 });

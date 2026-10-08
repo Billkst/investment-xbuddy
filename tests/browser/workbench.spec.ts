@@ -16,7 +16,7 @@ test("免登录首页、自由目标、审批、报告、证据与刷新恢复",
   page.on("pageerror", (e) => errors.push(e.message));
 
   await expect(
-    page.getByRole("heading", { name: "今天，想研究什么？" }),
+    page.getByRole("heading", { name: "把一个投资问题，研究清楚。" }),
   ).toBeVisible();
   await expect(page.locator("main")).toHaveAttribute("aria-busy", "false");
   await page.screenshot({
@@ -24,22 +24,29 @@ test("免登录首页、自由目标、审批、报告、证据与刷新恢复",
     fullPage: true,
   });
   await expect(page.getByRole("link", { name: /登录/ })).toHaveCount(0);
+  await expect(page.getByRole("combobox", { name: "数据模式" })).toHaveCount(0);
+  await expect(page.getByText("构造数据演示", { exact: true })).toHaveCount(0);
   await expect(page.locator(".profile")).toContainText("免登录研究工作台");
-  await page.getByRole("button", { name: /完整流程 · 构造数据/ }).click();
+  await page.getByRole("button", { name: /比较茅台与五粮液/ }).click();
   await expect(page.getByRole("textbox", { name: "研究目标" })).toHaveValue(
     /现金流/,
   );
-  await page.getByText("执行与验证选项", { exact: true }).click();
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  await page.getByText("研究额度与本地记录", { exact: true }).click();
   await page.getByRole("combobox", { name: "调用额度", exact: true }).click();
   await page.getByRole("option", { name: "1 次", exact: true }).click();
+  await page.getByRole("button", { name: "新建研究", exact: true }).click();
+  await page.getByRole("button", { name: /比较茅台与五粮液/ }).click();
   await page.getByRole("button", { name: "生成研究计划", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "执行计划", exact: true }),
+    page.getByRole("button", { name: "确认并开始研究", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "贵州茅台 × 五粮液", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "执行计划", exact: true }).click();
+  await page
+    .getByRole("button", { name: "确认并开始研究", exact: true })
+    .click();
   await expect(
     page.getByRole("heading", { name: "继续研究前，确认调用额度" }),
   ).toBeVisible();
@@ -54,7 +61,7 @@ test("免登录首页、自由目标、审批、报告、证据与刷新恢复",
   await expect(page.getByRole("button", { name: "导出报告" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "研究发现" })).toBeVisible();
   await page
-    .getByRole("button", { name: "证据 1", exact: true })
+    .getByRole("button", { name: /^证据 \d+$/, exact: true })
     .first()
     .click();
   await expect(
@@ -62,6 +69,9 @@ test("免登录首页、自由目标、审批、报告、证据与刷新恢复",
   ).toBeVisible();
   await expect(page.getByText("原始记录", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "证据详情", exact: true }),
+  ).not.toBeVisible();
   await page.screenshot({
     path: "test-results/report-desktop.png",
     fullPage: true,
@@ -121,6 +131,6 @@ test("手机布局与导航不溢出", async ({ page }) => {
   });
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   await expect(
-    page.getByRole("button", { name: "能力与连接", exact: true }),
+    page.getByRole("button", { name: "设置", exact: true }),
   ).toBeVisible();
 });

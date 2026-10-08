@@ -92,6 +92,7 @@ import type {
   Mode,
   RunStatus,
   ResearchEvent,
+  Finding,
 } from "@/lib/research/types";
 import { toolRegistry } from "@/lib/research/tools";
 import {
@@ -144,23 +145,23 @@ const statusText: Record<RunStatus, string> = {
 const samples = [
   {
     tag: "行情与风险",
-    title: "把价格变化，拆成可验证的问题",
+    title: "茅台近一年的波动与回撤",
     text: "分析贵州茅台近一年的价格走势、波动与最大回撤，说明数据局限。",
     mode: "live" as Mode,
     icon: Activity,
   },
   {
     tag: "指数观察",
-    title: "看清一段行情的风险轮廓",
+    title: "沪深300近三个月表现",
     text: "研究沪深300近三个月的走势和最大回撤，给出简短研究摘要。",
     mode: "live" as Mode,
     icon: Compass,
   },
   {
-    tag: "完整流程 · 构造数据",
-    title: "比较公司的现金流与盈利质量",
+    tag: "公司对比",
+    title: "比较茅台与五粮液的盈利质量",
     text: "比较贵州茅台和五粮液最近三年的盈利质量与估值，重点关注现金流。",
-    mode: "demo" as Mode,
+    mode: "live" as Mode,
     icon: Layers,
   },
 ];
@@ -223,12 +224,9 @@ async function api<T = { run: Run; busy?: boolean; stopRequested?: boolean }>(
 export default function Home() {
   const [boot, setBoot] = useState<Bootstrap | null>(null),
     [goal, setGoal] = useState(""),
-    [mode, setMode] = useState<Mode>("demo"),
     [budget, setBudget] = useState("10"),
-    [fault, setFault] = useState<Run["fault"]>("none"),
     [run, setRun] = useState<Run | null>(null),
     [view, setView] = useState<"research" | "memory" | "tools">("research"),
-    [tab, setTab] = useState("plan"),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [selectedEvidence, setSelectedEvidence] = useState<Evidence | null>(null),
@@ -241,18 +239,14 @@ export default function Home() {
   const [modelSource, setModelSource] = useState<"site" | "personal" | "rules">(
     "site",
   );
-  const [modelProvider, setModelProvider] = useState<ModelProvider>("groq");
+  const [modelProvider, setModelProvider] = useState<ModelProvider>("deepseek");
   const [modelName, setModelName] = useState<string>(
-    modelProviders.groq.defaultModel,
+    modelProviders.deepseek.defaultModel,
   );
   const [personalKey, setPersonalKey] = useState("");
   const [modelBusy, setModelBusy] = useState(false);
   const [modelMessage, setModelMessage] = useState("");
   const [modelTestOk, setModelTestOk] = useState(false);
-  const selectedHasModel =
-    modelSelection.source === "personal"
-      ? !!personalCredential
-      : modelSelection.source === "site" && !!boot?.config.model;
   const activeModel =
     run && view === "research"
       ? (run.modelSelection ?? { source: "site" as const })
@@ -346,7 +340,6 @@ export default function Home() {
         if (id) {
           const saved = await api(undefined, id);
           setRun(saved.run);
-          setTab(saved.run.report ? "report" : "plan");
         }
       })
       .catch((e) => setError(e.message));
@@ -401,7 +394,6 @@ export default function Home() {
         const data = await api({ action: "advance", id });
         if (!disposed && generation.current === token) {
           showRun(data.run);
-          if (data.run.status === "completed") setTab("report");
         }
       } catch (e) {
         const err = e as Error & { status?: number };
@@ -426,7 +418,7 @@ export default function Home() {
     };
   }, [run, stopRequested, showRun]);
   const create = useCallback(
-    async (input?: string, inputMode?: Mode) => {
+    async (input?: string) => {
       const text = (input ?? goal).trim();
       if (text.length < 4) {
         toast.error("请描述至少4个字的研究目标");
@@ -441,14 +433,12 @@ export default function Home() {
         const data = await api({
           action: "create",
           goal: text,
-          mode: inputMode ?? mode,
+          mode: "live",
           maxCalls: Number(budget),
-          fault,
           modelSelection,
         });
         showRun(data.run);
         setView("research");
-        setTab("plan");
         return { id: data.run.id, status: data.run.status };
       } catch (e) {
         setError((e as Error).message);
@@ -457,7 +447,7 @@ export default function Home() {
         setBusy(false);
       }
     },
-    [goal, mode, budget, fault, boot, showRun, modelSelection],
+    [goal, budget, boot, showRun, modelSelection],
   );
   const action = async (
     name: string,
@@ -502,7 +492,6 @@ export default function Home() {
       const data = await api(undefined, id);
       showRun(data.run);
       setView("research");
-      setTab(data.run.report ? "report" : "plan");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -596,9 +585,8 @@ export default function Home() {
               type: "object",
               properties: {
                 goal: { type: "string", minLength: 4, maxLength: 2000 },
-                mode: { type: "string", enum: ["live", "demo"] },
               },
-              required: ["goal", "mode"],
+              required: ["goal"],
               additionalProperties: false,
             },
             annotations: { readOnlyHint: false, untrustedContentHint: true },
@@ -607,11 +595,10 @@ export default function Home() {
               if (
                 typeof x.goal !== "string" ||
                 x.goal.length < 4 ||
-                x.goal.length > 2000 ||
-                !["live", "demo"].includes(String(x.mode))
+                x.goal.length > 2000
               )
                 throw new Error("研究目标或数据模式无效");
-              return await createRef.current(x.goal, x.mode as Mode);
+              return await createRef.current(x.goal);
             },
           },
           { signal: lifecycle.signal },
@@ -654,6 +641,392 @@ export default function Home() {
     run?.steps.filter((s) =>
       ["succeeded", "failed", "skipped"].includes(s.status),
     ).length ?? 0;
+  const orderedInsights = (run?.report?.findings ?? [])
+    .filter((f) => f.kind === "inference")
+    .map((f, index) => ({
+      f,
+      index,
+      date:
+        f.evidenceIds
+          .map((id) => run?.evidence.find((e) => e.id === id)?.asOf ?? "")
+          .sort()
+          .at(-1) ?? "",
+    }))
+    .sort((a, b) => b.date.localeCompare(a.date) || b.index - a.index);
+  const insightGroups = new Set<string>();
+  const primaryInsights = orderedInsights
+    .filter(({ f }) => {
+      const group = [
+        ...new Set(
+          f.evidenceIds.map(
+            (id) => run?.evidence.find((e) => e.id === id)?.security.code,
+          ),
+        ),
+      ]
+        .sort()
+        .join(",");
+      if (insightGroups.has(group)) return false;
+      insightGroups.add(group);
+      return true;
+    })
+    .map((x) => x.f)
+    .slice(0, 3);
+  const headlineFindings = primaryInsights.length
+    ? primaryInsights
+    : (run?.report?.findings ?? []).slice(0, 3);
+  const metricSeen = new Set<string>();
+  const headlineMetrics = [...(run?.evidence ?? [])]
+    .filter(
+      (e) =>
+        e.quality === "verified" &&
+        e.value !== null &&
+        /^(现金利润比|市盈率 TTM|区间涨跌幅|最大回撤|年化波动率)$/.test(
+          e.label,
+        ),
+    )
+    .sort((a, b) => b.asOf.localeCompare(a.asOf))
+    .filter((e) => {
+      const key = e.security.code + e.label;
+      if (metricSeen.has(key)) return false;
+      metricSeen.add(key);
+      return true;
+    })
+    .slice(0, 4);
+  const renderFinding = (f: Finding, i: number) =>
+    run ? (
+      <div className="finding" key={i}>
+        <span className={`finding-kind ${f.kind}`}>
+          {f.kind === "fact"
+            ? "事实"
+            : f.kind === "inference"
+              ? "推断"
+              : "不确定"}
+        </span>
+        <div>
+          <p>{f.text}</p>
+          <div className="citation-list">
+            {f.evidenceIds.map((id) => (
+              <button
+                key={id}
+                onClick={() =>
+                  setSelectedEvidence(
+                    run.evidence.find((e) => e.id === id) ?? null,
+                  )
+                }
+              >
+                <Link2 size={11} />
+                证据 {run.evidence.findIndex((e) => e.id === id) + 1}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    ) : null;
+  const planPanel = run ? (
+    <>
+      <div className="plan-card">
+        <div className="card-heading">
+          <div>
+            <h2>研究路径</h2>
+            <p>
+              {run.intent?.focus.join(" · ") || "正在识别研究范围与数据需求"}
+            </p>
+          </div>
+          <span className="muted-tag">{run.steps.length} 个步骤</span>
+        </div>
+        {!run.steps.length ? (
+          <div className="empty-panel">
+            <BrainCircuit size={30} />
+            <p>
+              {run.status === "needs_input"
+                ? "补充信息后，将生成可执行的研究计划。"
+                : "正在识别研究目标、可用工具与约束…"}
+            </p>
+          </div>
+        ) : (
+          <ol className="step-list">
+            {run.steps.map((s, i) => (
+              <li key={s.id} className={`step ${s.status}`}>
+                <div className="step-marker">
+                  {s.status === "succeeded" ? (
+                    <Check size={15} />
+                  ) : s.status === "failed" ? (
+                    <XCircle size={15} />
+                  ) : s.status === "running" ? (
+                    <Loader2 size={15} className="spin" />
+                  ) : (
+                    <span>{String(i + 1).padStart(2, "0")}</span>
+                  )}
+                </div>
+                <div className="step-body">
+                  <div className="step-title">
+                    <strong>{s.title}</strong>
+                    <span>
+                      {s.status === "succeeded"
+                        ? "已完成"
+                        : s.status === "failed"
+                          ? "失败"
+                          : s.status === "skipped"
+                            ? "已跳过"
+                            : s.status === "running"
+                              ? "执行中"
+                              : "待执行"}
+                    </span>
+                  </div>
+                  <p>{toolRegistry[s.tool]?.description}</p>
+                  <div className="step-meta">
+                    <code>{s.tool}</code>
+                    {s.evidenceIds.length > 0 && (
+                      <span>{s.evidenceIds.length} 条证据</span>
+                    )}
+                    {s.durationMs !== undefined && (
+                      <span>{(s.durationMs / 1000).toFixed(2)}s</span>
+                    )}
+                  </div>
+                  {s.error && (
+                    <div className="step-error">
+                      {s.error}
+                      {s.status === "failed" && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={
+                            busy || ["planning", "running"].includes(run.status)
+                          }
+                          onClick={() => action("retry", { stepId: s.id })}
+                        >
+                          <RotateCcw size={12} />
+                          重试
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ol>
+        )}
+        {run.intent?.limitations.map((text, i) => (
+          <p className="plan-limitation" key={i}>
+            <AlertTriangle size={13} />
+            {text}
+          </p>
+        ))}
+      </div>
+      {["paused", "waiting_approval", "failed"].includes(run.status) && (
+        <div className="partial-action">
+          <p>{run.pauseReason ?? "你也可以使用当前已有证据完成研究。"}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={busy}
+            onClick={() => action("partial")}
+          >
+            生成部分报告
+          </Button>
+        </div>
+      )}
+    </>
+  ) : null;
+  const reportPanel = run?.report ? (
+    <>
+      {" "}
+      <article className="report-card">
+        <div className="report-overline">
+          <FileText size={15} />
+          研究备忘录
+          <span>{dateLabel(run.report.createdAt)}</span>
+        </div>
+        <h2>{run.report.title}</h2>
+        <p className="report-summary">{run.report.summary}</p>
+        <PriceChart evidence={run.evidence} />
+        <h3>研究发现</h3>
+        {run.report.findings.length ? (
+          <>
+            <div className="headline-metrics">
+              {headlineMetrics.map((e) => (
+                <button key={e.id} onClick={() => setSelectedEvidence(e)}>
+                  <span>
+                    {e.security.name} · {e.label}
+                  </span>
+                  <strong>
+                    {valueLabel(e)}
+                    <small>{e.unit}</small>
+                  </strong>
+                  <span>
+                    {e.asOf} <Link2 size={11} />
+                  </span>
+                </button>
+              ))}
+            </div>
+            {headlineFindings.map(renderFinding)}
+            <details className="finding-details">
+              <summary>
+                查看全部事实与研究依据（{run.report.findings.length} 项）
+                <ChevronDown size={14} />
+              </summary>
+              {run.report.findings.map(renderFinding)}
+            </details>
+          </>
+        ) : (
+          <p className="empty-text">没有取得可核验的事实证据。</p>
+        )}
+        {run.report.gaps.length > 0 && (
+          <div className="report-gaps">
+            <h3>
+              <AlertTriangle size={16} />
+              数据缺口与研究边界
+            </h3>
+            <ul>
+              {run.report.gaps.map((g, i) => (
+                <li key={i}>{g}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        <h3>下一步值得追问</h3>
+        <ul className="followups">
+          {run.report.questions.map((q) => (
+            <li key={q}>{q}</li>
+          ))}
+        </ul>
+        <div className="report-footer">
+          <ShieldCheck size={15} />
+          本报告用于研究，不提供买卖指令或收益承诺。
+        </div>
+      </article>
+    </>
+  ) : null;
+  const eventPanel = run ? (
+    <>
+      {" "}
+      <div className="events-card">
+        <div className="card-heading">
+          <div>
+            <h2>运行记录</h2>
+            <p>实际执行事件、耗时与恢复状态</p>
+          </div>
+          <span>{run.events.length} 条</span>
+        </div>
+        <ol className="event-list">
+          {[...run.events].reverse().map((e) => (
+            <EventRow key={e.id} event={e} />
+          ))}
+        </ol>
+      </div>
+    </>
+  ) : null;
+  const evidencePanel = run ? (
+    <>
+      {" "}
+      <aside className="evidence-column">
+        <div className="evidence-card">
+          <div className="card-heading">
+            <h2>
+              <Database size={16} />
+              证据库
+            </h2>
+            <span className="count-pill">{run.evidence.length}</span>
+          </div>
+          <p className="panel-description">点击证据，查看原始字段与统计口径</p>
+          {run.evidence.length ? (
+            <div className="evidence-list">
+              {run.evidence.map((e, i) => (
+                <button
+                  key={e.id}
+                  className="evidence-item"
+                  onClick={() => setSelectedEvidence(e)}
+                >
+                  <div className="evidence-item-top">
+                    <span>{String(i + 1).padStart(2, "0")}</span>
+                    <strong>{e.security.name}</strong>
+                    <span className={`quality-label ${e.quality}`}>
+                      {e.quality === "demo"
+                        ? "构造"
+                        : e.quality === "missing"
+                          ? "缺失"
+                          : e.quality === "stale"
+                            ? "待核对"
+                            : e.formula
+                              ? "计算"
+                              : "原始"}
+                    </span>
+                  </div>
+                  <div className="evidence-value">
+                    <span>{e.label}</span>
+                    <strong>
+                      {valueLabel(e)}
+                      <small>{e.unit}</small>
+                    </strong>
+                  </div>
+                  <div className="evidence-bottom">
+                    <span>{e.source}</span>
+                    <span>{e.asOf}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="evidence-empty">
+              <Database size={26} />
+              <p>还没有证据</p>
+              <span>工具结果会在执行后自动保存</span>
+            </div>
+          )}
+        </div>
+        <div className="context-card">
+          <div className="card-heading">
+            <h2>
+              <BrainCircuit size={16} />
+              研究上下文
+            </h2>
+            <span className="count-pill">{run.context.revision}</span>
+          </div>
+          <dl>
+            <div>
+              <dt>检查点</dt>
+              <dd>第 {run.checkpoint.revision} 次</dd>
+            </div>
+            <div>
+              <dt>已保存步骤</dt>
+              <dd>{run.checkpoint.completedSteps.length} 个</dd>
+            </div>
+            <div>
+              <dt>读取长期偏好</dt>
+              <dd>{run.memoryContext.length} 条</dd>
+            </div>
+            {run.context.compressedAt && (
+              <div>
+                <dt>压缩字符数</dt>
+                <dd>
+                  {run.context.beforeChars} → {run.context.afterChars}
+                </dd>
+              </div>
+            )}
+          </dl>
+          {run.context.summary && (
+            <details>
+              <summary>查看压缩摘要</summary>
+              <pre>{run.context.summary}</pre>
+            </details>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={
+              busy ||
+              ["planning", "running"].includes(run.status) ||
+              !run.evidence.length
+            }
+            onClick={() => action("compress")}
+          >
+            压缩并保存上下文
+          </Button>
+          <p>原始证据完整保留，后续模型调用读取摘要。</p>
+        </div>
+      </aside>
+    </>
+  ) : null;
   return (
     <SidebarProvider>
       <Toaster position="top-center" richColors />
@@ -662,7 +1035,7 @@ export default function Home() {
           <button className="brand" onClick={newResearch}>
             <span className="brand-symbol">X</span>
             <div>
-              投资 XBuddy<small>PERSONAL RESEARCH DESK</small>
+              投资 XBuddy<small>个人投资研究</small>
             </div>
           </button>
           <Button className="new-research" onClick={newResearch}>
@@ -676,7 +1049,7 @@ export default function Home() {
             [
               { id: "research", label: "研究空间", icon: Activity },
               { id: "memory", label: "研究记忆", icon: BookOpen },
-              { id: "tools", label: "能力与连接", icon: Layers },
+              { id: "tools", label: "设置", icon: Layers },
             ] as const
           ).map((n) => (
             <button
@@ -692,34 +1065,38 @@ export default function Home() {
             </button>
           ))}
           <div className="history-label">
-            <p className="nav-label">研究线程</p>
-            <span>{boot?.runs.length ?? 0}</span>
+            <p className="nav-label">研究记录</p>
+            <span>
+              {boot?.runs.filter((r) => r.mode === "live").length ?? 0}
+            </span>
           </div>
           {!boot && !error ? (
             <div className="px-6 space-y-3">
               <Skeleton className="h-7 w-full" />
               <Skeleton className="h-7 w-4/5" />
             </div>
-          ) : !boot?.runs.length ? (
+          ) : !boot?.runs.filter((r) => r.mode === "live").length ? (
             <p className="sidebar-hint">从第一个研究问题开始</p>
           ) : (
-            boot.runs.map((r) => (
-              <button
-                key={r.id}
-                className={`history-item ${run?.id === r.id && view === "research" ? "selected" : ""}`}
-                onClick={() => openRun(r.id)}
-              >
-                <div>
-                  <FileText size={14} />
-                  <span>{r.goal}</span>
-                </div>
-                <small>
-                  <span className={`tiny-status ${r.status}`} />
-                  {statusText[r.status]}
-                  <span>{dateLabel(r.updatedAt)}</span>
-                </small>
-              </button>
-            ))
+            boot.runs
+              .filter((r) => r.mode === "live")
+              .map((r) => (
+                <button
+                  key={r.id}
+                  className={`history-item ${run?.id === r.id && view === "research" ? "selected" : ""}`}
+                  onClick={() => openRun(r.id)}
+                >
+                  <div>
+                    <FileText size={14} />
+                    <span>{r.goal}</span>
+                  </div>
+                  <small>
+                    <span className={`tiny-status ${r.status}`} />
+                    {statusText[r.status]}
+                    <span>{dateLabel(r.updatedAt)}</span>
+                  </small>
+                </button>
+              ))
           )}
         </SidebarContent>
         <SidebarFooter>
@@ -740,13 +1117,12 @@ export default function Home() {
         <header className="topbar">
           <div className="topbar-title">
             <SidebarTrigger className="md:hidden" />
-            <span>我的工作台</span>
-            <ChevronRight size={14} />
+
             <strong>
               {view === "memory"
                 ? "研究记忆"
                 : view === "tools"
-                  ? "能力与连接"
+                  ? "设置"
                   : "研究空间"}
             </strong>
           </div>
@@ -755,10 +1131,7 @@ export default function Home() {
               <Settings2 size={14} />
               模型设置
             </Button>
-            <span className="private-label">
-              <ShieldCheck size={14} />
-              免登录使用
-            </span>
+
             <span className="mode-pill neutral">
               <BrainCircuit size={13} />
               {activeModelLabel}
@@ -783,38 +1156,14 @@ export default function Home() {
             </Button>
           </div>
         )}
-        {boot && (
-          <div className="workspace-notice">
-            <Database size={19} />
-            <div>
-              <strong>打开即用，研究记录与记忆自动保存</strong>
-              <p>
-                同一浏览器再次打开可继续研究。更换设备或清除本站 Cookie
-                后无法恢复原工作台，请导出需要的报告。
-              </p>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={
-                busy || (!!run && ["planning", "running"].includes(run.status))
-              }
-              onClick={clearWorkspace}
-            >
-              <Trash2 size={14} />
-              清空工作台
-            </Button>
-          </div>
-        )}
         {view === "research" && !run && (
           <section className="welcome">
-            <div className="eyebrow">
-              <span />
-              从一个好问题开始
+            <div className="welcome-mark">
+              <Search size={24} />
             </div>
-            <h1>今天，想研究什么？</h1>
+            <h1>把一个投资问题，研究清楚。</h1>
             <p className="welcome-intro">
-              描述你的目标，让研究有计划、有证据、有后续。
+              输入标的和关注点，先确认计划，再查看有来源的研究结论。
             </p>
             <form
               className="goal-composer"
@@ -838,21 +1187,10 @@ export default function Home() {
               />
               <div className="composer-footer">
                 <div className="composer-options">
-                  <Select
-                    value={mode}
-                    onValueChange={(v) => setMode(v as Mode)}
-                  >
-                    <SelectTrigger
-                      aria-label="数据模式"
-                      className="mode-select"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="live">真实数据</SelectItem>
-                      <SelectItem value="demo">构造数据演示</SelectItem>
-                    </SelectContent>
-                  </Select>
+                  <span className="data-source-hint">
+                    <Database size={13} />
+                    真实金融数据
+                  </span>
                   <span className="shortcut">
                     <Command size={11} />
                     Enter
@@ -872,90 +1210,34 @@ export default function Home() {
                 </Button>
               </div>
             </form>
-            <div className="scope-note">
-              {mode === "demo" ? (
-                <FlaskConical size={16} />
-              ) : (
-                <ShieldCheck size={16} />
-              )}
-              <span>
-                {mode === "demo"
-                  ? `演示数值均为构造数据，不代表真实证券。${selectedHasModel ? "规划可使用已配置模型。" : "当前未接入 AI，计划由规则生成。"}`
-                  : `行情优先使用扶摇，未配置时使用腾讯公开行情。${selectedHasModel ? "" : "当前使用规则规划。"}`}
-              </span>
-            </div>
-            <details className="advanced-options">
-              <summary>
-                <Settings2 size={14} />
-                执行与验证选项
-                <ChevronDown size={13} />
-              </summary>
-              <div className="options-grid">
-                <label>
-                  调用额度
-                  <Select value={budget} onValueChange={setBudget}>
-                    <SelectTrigger aria-label="调用额度">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {[1, 2, 4, 10, 20, 30].map((n) => (
-                        <SelectItem key={n} value={String(n)}>
-                          {n} 次
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </label>
-                <label>
-                  故障演练
-                  <Select
-                    value={fault}
-                    onValueChange={(v) => setFault(v as Run["fault"])}
-                  >
-                    <SelectTrigger aria-label="故障演练">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">关闭</SelectItem>
-                      <SelectItem value="tool_failure">工具超时一次</SelectItem>
-                      <SelectItem value="missing_data">字段缺失一次</SelectItem>
-                      <SelectItem value="model_failure">模型不可用</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </label>
-              </div>
-            </details>
+            <p className="composer-note">
+              {boot?.config.fuyao
+                ? "使用扶摇行情、财报与估值。"
+                : "当前可研究 A 股和指数行情；财报、估值需配置扶摇权限。"}{" "}
+              缺失数据会明确说明。
+            </p>
             <div className="section-caption">
               <span>也可以从这些问题开始</span>
               <span>可编辑的研究示例</span>
             </div>
             <div className="sample-grid">
-              {samples.map((s) => (
-                <button
-                  key={s.tag}
-                  className="sample-card"
-                  onClick={() => {
-                    setGoal(s.text);
-                    setMode(s.mode);
-                  }}
-                >
-                  <span className="sample-icon">
-                    <s.icon size={19} />
-                  </span>
-                  <span className="sample-tag">{s.tag}</span>
-                  <strong>{s.title}</strong>
-                  <p>{s.text}</p>
-                </button>
-              ))}
-            </div>
-            <div className="research-path">
-              {["明确目标", "规划任务", "核验证据", "沉淀成果"].map((s, i) => (
-                <div key={s}>
-                  <span>0{i + 1}</span>
-                  {s}
-                  {i < 3 && <span className="path-line" />}
-                </div>
-              ))}
+              {samples
+                .filter((s) => s.tag !== "公司对比" || boot?.config.fuyao)
+                .map((s) => (
+                  <button
+                    key={s.tag}
+                    className="sample-card"
+                    onClick={() => {
+                      setGoal(s.text);
+                    }}
+                  >
+                    <span className="sample-icon">
+                      <s.icon size={19} />
+                    </span>
+                    <span className="sample-tag">{s.tag}</span>
+                    <strong>{s.title}</strong>
+                  </button>
+                ))}
             </div>
           </section>
         )}
@@ -1050,7 +1332,7 @@ export default function Home() {
                   ? "规划中"
                   : run.planner === "model"
                     ? "模型规划"
-                    : "规则规划 · 无模型参与"}
+                    : "规则规划"}
               </span>
               {run.intent && (
                 <span className="muted-tag">
@@ -1066,53 +1348,10 @@ export default function Home() {
                   ? "本研究全部金融数值为构造数据，仅验证流程。 "
                   : ""}
                 {run.planner === "rules"
-                  ? "模型未参与规划；当前按已识别标的与研究重点生成有限范围的任务。"
+                  ? "规划使用规则降级；研究结论仍以实际取得的数据为依据。"
                   : ""}
               </div>
             )}
-            <div className="run-stats">
-              <div>
-                <span>任务进度</span>
-                <strong>
-                  {finished}
-                  <small> / {run.steps.length}</small>
-                </strong>
-                <Progress
-                  value={
-                    run.steps.length ? (finished / run.steps.length) * 100 : 0
-                  }
-                  className="h-1.5"
-                />
-              </div>
-              <div>
-                <span>已保存证据</span>
-                <strong>
-                  {run.evidence.length}
-                  <small> 条</small>
-                </strong>
-                <p>原始字段与计算依据</p>
-              </div>
-              <div>
-                <span>调用额度</span>
-                <strong>
-                  {run.usage.calls}
-                  <small> / {run.budget.maxCalls}</small>
-                </strong>
-                <p>
-                  {run.mode === "demo"
-                    ? "含模拟调用；不产生数据费用"
-                    : "含模型与数据请求尝试"}
-                </p>
-              </div>
-              <div>
-                <span>累计执行耗时</span>
-                <strong>
-                  {(run.usage.durationMs / 1000).toFixed(1)}
-                  <small> 秒</small>
-                </strong>
-                <p>{run.usage.tokens.toLocaleString()} tokens · 费用未计价</p>
-              </div>
-            </div>
             {run.approval && (
               <div className="approval-card">
                 <div className="approval-icon">
@@ -1174,396 +1413,134 @@ export default function Home() {
                 </div>
               </form>
             )}
-            <div className="run-columns">
-              <div className="run-main">
-                <Tabs value={tab} onValueChange={setTab}>
-                  <div className="tabs-toolbar">
-                    <TabsList variant="line">
-                      <TabsTrigger value="plan">
-                        <Layers size={15} />
-                        研究计划
-                      </TabsTrigger>
-                      <TabsTrigger value="report">
-                        <FileText size={15} />
-                        研究成果
-                        {run.report && <span className="tab-count">1</span>}
-                      </TabsTrigger>
-                      <TabsTrigger value="events">
-                        <Activity size={15} />
-                        运行记录
-                      </TabsTrigger>
-                    </TabsList>
-                    <div className="execution-buttons">
-                      {run.status === "ready" && (
-                        <Button
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => action("start")}
-                        >
-                          <Play size={13} />
-                          执行计划
-                        </Button>
-                      )}
-                      {["running", "planning"].includes(run.status) && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={stopRequested}
-                          onClick={() => action("pause")}
-                        >
-                          <Pause size={13} />
-                          {stopRequested ? "正在暂停" : "暂停"}
-                        </Button>
-                      )}
-                      {["paused", "failed"].includes(run.status) &&
-                        !run.approval && (
-                          <Button
-                            size="sm"
-                            disabled={busy}
-                            onClick={() => action("resume")}
-                          >
-                            <Play size={13} />
-                            继续执行
-                          </Button>
-                        )}
-                    </div>
-                  </div>
-                  <TabsContent value="plan">
-                    <div className="plan-card">
-                      <div className="card-heading">
-                        <div>
-                          <h2>研究路径</h2>
-                          <p>
-                            {run.intent?.focus.join(" · ") ||
-                              "正在识别研究范围与数据需求"}
-                          </p>
-                        </div>
-                        <span className="muted-tag">
-                          {run.steps.length} 个步骤
-                        </span>
-                      </div>
-                      {!run.steps.length ? (
-                        <div className="empty-panel">
-                          <BrainCircuit size={30} />
-                          <p>
-                            {run.status === "needs_input"
-                              ? "补充信息后，将生成可执行的研究计划。"
-                              : "正在识别研究目标、可用工具与约束…"}
-                          </p>
-                        </div>
-                      ) : (
-                        <ol className="step-list">
-                          {run.steps.map((s, i) => (
-                            <li key={s.id} className={`step ${s.status}`}>
-                              <div className="step-marker">
-                                {s.status === "succeeded" ? (
-                                  <Check size={15} />
-                                ) : s.status === "failed" ? (
-                                  <XCircle size={15} />
-                                ) : s.status === "running" ? (
-                                  <Loader2 size={15} className="spin" />
-                                ) : (
-                                  <span>{String(i + 1).padStart(2, "0")}</span>
-                                )}
-                              </div>
-                              <div className="step-body">
-                                <div className="step-title">
-                                  <strong>{s.title}</strong>
-                                  <span>
-                                    {s.status === "succeeded"
-                                      ? "已完成"
-                                      : s.status === "failed"
-                                        ? "失败"
-                                        : s.status === "skipped"
-                                          ? "已跳过"
-                                          : s.status === "running"
-                                            ? "执行中"
-                                            : "待执行"}
-                                  </span>
-                                </div>
-                                <p>{toolRegistry[s.tool]?.description}</p>
-                                <div className="step-meta">
-                                  <code>{s.tool}</code>
-                                  {s.evidenceIds.length > 0 && (
-                                    <span>{s.evidenceIds.length} 条证据</span>
-                                  )}
-                                  {s.durationMs !== undefined && (
-                                    <span>
-                                      {(s.durationMs / 1000).toFixed(2)}s
-                                    </span>
-                                  )}
-                                </div>
-                                {s.error && (
-                                  <div className="step-error">
-                                    {s.error}
-                                    {s.status === "failed" && (
-                                      <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        disabled={
-                                          busy ||
-                                          ["planning", "running"].includes(
-                                            run.status,
-                                          )
-                                        }
-                                        onClick={() =>
-                                          action("retry", { stepId: s.id })
-                                        }
-                                      >
-                                        <RotateCcw size={12} />
-                                        重试
-                                      </Button>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                      {run.intent?.limitations.map((text, i) => (
-                        <p className="plan-limitation" key={i}>
-                          <AlertTriangle size={13} />
-                          {text}
-                        </p>
-                      ))}
-                    </div>
-                    {["paused", "waiting_approval", "failed"].includes(
-                      run.status,
-                    ) && (
-                      <div className="partial-action">
-                        <p>
-                          {run.pauseReason ??
-                            "你也可以使用当前已有证据完成研究。"}
-                        </p>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={busy}
-                          onClick={() => action("partial")}
-                        >
-                          生成部分报告
-                        </Button>
-                      </div>
-                    )}
-                  </TabsContent>
-                  <TabsContent value="report">
-                    {run.report ? (
-                      <article className="report-card">
-                        <div className="report-overline">
-                          <FileText size={15} />
-                          研究备忘录
-                          <span>{dateLabel(run.report.createdAt)}</span>
-                        </div>
-                        <h2>{run.report.title}</h2>
-                        <p className="report-summary">{run.report.summary}</p>
-                        <PriceChart evidence={run.evidence} />
-                        <h3>研究发现</h3>
-                        {run.report.findings.length ? (
-                          run.report.findings.map((f, i) => (
-                            <div className="finding" key={i}>
-                              <span className={`finding-kind ${f.kind}`}>
-                                {f.kind === "fact"
-                                  ? "事实"
-                                  : f.kind === "inference"
-                                    ? "推断"
-                                    : "不确定"}
-                              </span>
-                              <div>
-                                <p>{f.text}</p>
-                                <div className="citation-list">
-                                  {f.evidenceIds.map((id) => (
-                                    <button
-                                      key={id}
-                                      onClick={() =>
-                                        setSelectedEvidence(
-                                          run.evidence.find(
-                                            (e) => e.id === id,
-                                          ) ?? null,
-                                        )
-                                      }
-                                    >
-                                      <Link2 size={11} />
-                                      证据{" "}
-                                      {run.evidence.findIndex(
-                                        (e) => e.id === id,
-                                      ) + 1}
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <p className="empty-text">
-                            没有取得可核验的事实证据。
-                          </p>
-                        )}
-                        {run.report.gaps.length > 0 && (
-                          <div className="report-gaps">
-                            <h3>
-                              <AlertTriangle size={16} />
-                              数据缺口与研究边界
-                            </h3>
-                            <ul>
-                              {run.report.gaps.map((g, i) => (
-                                <li key={i}>{g}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        <h3>下一步值得追问</h3>
-                        <ul className="followups">
-                          {run.report.questions.map((q) => (
-                            <li key={q}>{q}</li>
-                          ))}
-                        </ul>
-                        <div className="report-footer">
-                          <ShieldCheck size={15} />
-                          本报告用于研究，不提供买卖指令或收益承诺。
-                        </div>
-                      </article>
-                    ) : (
-                      <div className="empty-panel bordered">
-                        <FileText size={34} />
-                        <h3>研究成果将在这里汇集</h3>
-                        <p>完成数据任务后，生成带证据引用的研究备忘录。</p>
-                        {run.status === "ready" && (
-                          <Button onClick={() => action("start")}>
-                            <Play size={14} />
-                            执行研究计划
-                          </Button>
-                        )}
-                      </div>
-                    )}
-                  </TabsContent>
-                  <TabsContent value="events">
-                    <div className="events-card">
-                      <div className="card-heading">
-                        <div>
-                          <h2>运行记录</h2>
-                          <p>实际执行事件、耗时与恢复状态</p>
-                        </div>
-                        <span>{run.events.length} 条</span>
-                      </div>
-                      <ol className="event-list">
-                        {[...run.events].reverse().map((e) => (
-                          <EventRow key={e.id} event={e} />
-                        ))}
-                      </ol>
-                    </div>
-                  </TabsContent>
-                </Tabs>
-              </div>
-              <aside className="evidence-column">
-                <div className="evidence-card">
-                  <div className="card-heading">
-                    <h2>
-                      <Database size={16} />
-                      证据库
-                    </h2>
-                    <span className="count-pill">{run.evidence.length}</span>
-                  </div>
-                  <p className="panel-description">
-                    点击证据，查看原始字段与统计口径
+            <div className="study-stage">
+              <div className="stage-summary">
+                <div>
+                  <strong>
+                    {run.report
+                      ? "研究结果"
+                      : run.status === "ready"
+                        ? "确认这份研究计划"
+                        : run.status === "planning"
+                          ? "正在拆解你的研究目标"
+                          : "研究进度"}
+                  </strong>
+                  <p>
+                    {run.report
+                      ? `${run.evidence.length} 条证据 · 点击结论下方的引用可核验来源`
+                      : run.status === "ready"
+                        ? "确认标的、时间与研究重点后开始获取真实数据。"
+                        : `${finished} / ${run.steps.length} 个步骤已处理`}
                   </p>
-                  {run.evidence.length ? (
-                    <div className="evidence-list">
-                      {run.evidence.map((e, i) => (
-                        <button
-                          key={e.id}
-                          className="evidence-item"
-                          onClick={() => setSelectedEvidence(e)}
-                        >
-                          <div className="evidence-item-top">
-                            <span>{String(i + 1).padStart(2, "0")}</span>
-                            <strong>{e.security.name}</strong>
-                            <span className={`quality-label ${e.quality}`}>
-                              {e.quality === "demo"
-                                ? "构造"
-                                : e.quality === "missing"
-                                  ? "缺失"
-                                  : e.quality === "stale"
-                                    ? "待核对"
-                                    : e.formula
-                                      ? "计算"
-                                      : "原始"}
-                            </span>
-                          </div>
-                          <div className="evidence-value">
-                            <span>{e.label}</span>
-                            <strong>
-                              {valueLabel(e)}
-                              <small>{e.unit}</small>
-                            </strong>
-                          </div>
-                          <div className="evidence-bottom">
-                            <span>{e.source}</span>
-                            <span>{e.asOf}</span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="evidence-empty">
-                      <Database size={26} />
-                      <p>还没有证据</p>
-                      <span>工具结果会在执行后自动保存</span>
-                    </div>
-                  )}
                 </div>
-                <div className="context-card">
-                  <div className="card-heading">
-                    <h2>
-                      <BrainCircuit size={16} />
-                      研究上下文
-                    </h2>
-                    <span className="count-pill">{run.context.revision}</span>
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>检查点</dt>
-                      <dd>第 {run.checkpoint.revision} 次</dd>
-                    </div>
-                    <div>
-                      <dt>已保存步骤</dt>
-                      <dd>{run.checkpoint.completedSteps.length} 个</dd>
-                    </div>
-                    <div>
-                      <dt>读取长期偏好</dt>
-                      <dd>{run.memoryContext.length} 条</dd>
-                    </div>
-                    {run.context.compressedAt && (
-                      <div>
-                        <dt>压缩字符数</dt>
-                        <dd>
-                          {run.context.beforeChars} → {run.context.afterChars}
-                        </dd>
-                      </div>
+                <div className="execution-buttons">
+                  {run.status === "ready" && (
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => action("start")}
+                    >
+                      <Play size={13} />
+                      确认并开始研究
+                    </Button>
+                  )}
+                  {["running", "planning"].includes(run.status) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={stopRequested}
+                      onClick={() => action("pause")}
+                    >
+                      <Pause size={13} />
+                      {stopRequested ? "正在暂停" : "暂停"}
+                    </Button>
+                  )}
+                  {["paused", "failed"].includes(run.status) &&
+                    !run.approval && (
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => action("resume")}
+                      >
+                        <Play size={13} />
+                        继续执行
+                      </Button>
                     )}
-                  </dl>
-                  {run.context.summary && (
-                    <details>
-                      <summary>查看压缩摘要</summary>
-                      <pre>{run.context.summary}</pre>
-                    </details>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={
-                      busy ||
-                      ["planning", "running"].includes(run.status) ||
-                      !run.evidence.length
-                    }
-                    onClick={() => action("compress")}
-                  >
-                    压缩并保存上下文
-                  </Button>
-                  <p>原始证据完整保留，后续模型调用读取摘要。</p>
                 </div>
-              </aside>
+              </div>
+              {["running", "planning"].includes(run.status) && (
+                <Progress
+                  value={
+                    run.steps.length ? (finished / run.steps.length) * 100 : 5
+                  }
+                  className="h-1"
+                />
+              )}
+              <div className="primary-plan">
+                {run.report ? reportPanel : planPanel}
+              </div>
             </div>
+            <details className="process-details">
+              <summary>
+                <Activity size={16} />
+                查看研究过程<span>任务、证据与运行记录</span>
+                <ChevronDown size={16} />
+              </summary>
+              <div className="run-stats">
+                <div>
+                  <span>任务进度</span>
+                  <strong>
+                    {finished}
+                    <small> / {run.steps.length}</small>
+                  </strong>
+                  <Progress
+                    value={
+                      run.steps.length ? (finished / run.steps.length) * 100 : 0
+                    }
+                    className="h-1.5"
+                  />
+                </div>
+                <div>
+                  <span>已保存证据</span>
+                  <strong>
+                    {run.evidence.length}
+                    <small> 条</small>
+                  </strong>
+                  <p>原始字段与计算依据</p>
+                </div>
+                <div>
+                  <span>调用额度</span>
+                  <strong>
+                    {run.usage.calls}
+                    <small> / {run.budget.maxCalls}</small>
+                  </strong>
+                  <p>
+                    {run.mode === "demo"
+                      ? "含模拟调用；不产生数据费用"
+                      : "含模型与数据请求尝试"}
+                  </p>
+                </div>
+                <div>
+                  <span>累计执行耗时</span>
+                  <strong>
+                    {(run.usage.durationMs / 1000).toFixed(1)}
+                    <small> 秒</small>
+                  </strong>
+                  <p>{run.usage.tokens.toLocaleString()} tokens · 费用未计价</p>
+                </div>
+              </div>
+
+              <Tabs defaultValue="events">
+                <TabsList variant="line">
+                  <TabsTrigger value="events">运行记录</TabsTrigger>
+                  <TabsTrigger value="evidence">证据与上下文</TabsTrigger>
+                  <TabsTrigger value="plan">全部任务</TabsTrigger>
+                </TabsList>
+                <TabsContent value="events">{eventPanel}</TabsContent>
+                <TabsContent value="evidence">{evidencePanel}</TabsContent>
+                <TabsContent value="plan">{planPanel}</TabsContent>
+              </Tabs>
+            </details>
           </section>
         )}
         {view === "memory" && (
@@ -1621,10 +1598,9 @@ export default function Home() {
         )}
         {view === "tools" && (
           <section className="secondary-page">
-            <div className="eyebrow">CAPABILITIES & CONNECTIONS</div>
-            <h1>研究能力，一目了然</h1>
+            <h1>设置</h1>
             <p className="page-intro">
-              计划只能使用已注册的工具。服务未配置或数据不可用时，会保留明确的缺口。
+              默认共享模型可直接使用。你也可以选择自己的模型服务。
             </p>
             <div className="model-settings-card">
               <div className="card-heading">
@@ -1750,8 +1726,9 @@ export default function Home() {
                       <ExternalLink size={13} />
                     </a>
                     <p>
-                      免费额度以供应商账户为准；填写 key
-                      不代表所有模型均可免费使用。
+                      请使用对应服务商的国内 API key；百炼与方舟采用北京地域。
+                      可按账户权限修改模型名，豆包也支持 ep- 开头的接入点 ID。
+                      默认模型已按官方接口适配，实际权限以连接测试为准，费用由你的账户承担。
                     </p>
                   </div>
                 </>
@@ -1827,61 +1804,123 @@ export default function Home() {
                 text={
                   boot?.config.fuyao
                     ? "已配置，实际权限以调用结果为准"
-                    : "待配置，可接入行情、财报与估值"
+                    : "尚未提供金融数据 key。模型 API key 不能用于获取财报。"
                 }
+              />
+              <Connection
+                title="iFinD MCP"
+                status="未接入"
+                ready={false}
+                text="尚未接入，未参与当前研究。需同花顺或 iFinD 账号的 MCP 密钥与工具权限。"
               />
               <Connection
                 title="腾讯公开行情"
                 ready
-                text="无需密钥的备用来源；可用性以调用结果为准"
+                text="无需密钥的行情备用来源；实际研究会记录使用的数据源。"
               />
             </div>
             <div className="capability-note">
               <ShieldCheck size={18} />
               <p>
-                密钥由服务端管理。真实数据模式不会静默切换为构造数据。iFinD
-                需要单独的账号权限，本版尚未接入。部署与配置方式见项目 README。
+                模型服务和金融数据各自需要独立权限。
+                <a
+                  href="https://fuyao.aicubes.cn/admin"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  申请扶摇 key
+                </a>{" "}
+                ·{" "}
+                <a
+                  href="https://mcp.51ifind.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  了解 iFinD MCP
+                </a>
               </p>
             </div>
-            <div className="tool-table">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>工具</TableHead>
-                    <TableHead>数据能力</TableHead>
-                    <TableHead>权限</TableHead>
-                    <TableHead>调用成本</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {Object.entries(toolRegistry).map(([name, t]) => (
-                    <TableRow key={name}>
-                      <TableCell>
-                        <strong>{t.title}</strong>
-                        <code>{name}</code>
-                      </TableCell>
-                      <TableCell>{t.description}</TableCell>
-                      <TableCell>
-                        <span className="permission-tag">{t.permission}</span>
-                      </TableCell>
-                      <TableCell>
-                        {t.cost}
-                        <small>超时 {t.timeoutMs / 1000}s</small>
-                      </TableCell>
+            <details className="settings-details">
+              <summary>
+                工具能力与执行边界
+                <ChevronDown size={15} />
+              </summary>
+              <div className="tool-table">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>工具</TableHead>
+                      <TableHead>数据能力</TableHead>
+                      <TableHead>权限</TableHead>
+                      <TableHead>调用成本</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-            <div className="execution-boundary">
-              <h3>执行边界</h3>
+                  </TableHeader>
+                  <TableBody>
+                    {Object.entries(toolRegistry).map(([name, t]) => (
+                      <TableRow key={name}>
+                        <TableCell>
+                          <strong>{t.title}</strong>
+                          <code>{name}</code>
+                        </TableCell>
+                        <TableCell>{t.description}</TableCell>
+                        <TableCell>
+                          <span className="permission-tag">{t.permission}</span>
+                        </TableCell>
+                        <TableCell>
+                          {t.cost}
+                          <small>超时 {t.timeoutMs / 1000}s</small>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="execution-boundary">
+                <h3>执行边界</h3>
+                <p>
+                  每轮最多 4
+                  个标的。超过默认范围或调用额度时请求确认；单轮调用硬上限 40
+                  次，累计执行时限 4
+                  分钟。所有金融工具均为只读，模型不能调用任意接口或执行交易。
+                </p>
+              </div>
+            </details>
+            <details className="settings-details">
+              <summary>
+                研究额度与本地记录
+                <ChevronDown size={15} />
+              </summary>
+              <label className="budget-setting">
+                每轮调用上限
+                <Select value={budget} onValueChange={setBudget}>
+                  <SelectTrigger aria-label="调用额度">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {[1, 2, 4, 10, 20, 30].map((n) => (
+                      <SelectItem key={n} value={String(n)}>
+                        {n} 次
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </label>
               <p>
-                每轮最多 4
-                个标的。超过默认范围或调用额度时请求确认；单轮调用硬上限 40
-                次，累计执行时限 4
-                分钟。所有金融工具均为只读，模型不能调用任意接口或执行交易。
+                超出额度前会请求确认。研究记录与偏好保存在当前浏览器的独立工作台，换设备或清除
+                Cookie 后无法恢复，请及时导出报告。
               </p>
-            </div>
+              <Button
+                variant="ghost"
+                onClick={clearWorkspace}
+                disabled={
+                  busy ||
+                  (!!run && ["planning", "running"].includes(run.status))
+                }
+              >
+                <Trash2 size={14} />
+                清空工作台
+              </Button>
+            </details>
           </section>
         )}
       </main>
@@ -1912,17 +1951,19 @@ function Connection({
   title,
   ready,
   text,
+  status,
 }: {
   title: string;
   ready: boolean;
   text: string;
+  status?: string;
 }) {
   return (
     <div className="connection-card">
       <div>
         <Database size={18} />
         <span className={ready ? "connection-ready" : "connection-pending"}>
-          {ready ? "接入已配置" : "待配置"}
+          {status ?? (ready ? "已配置" : "待配置")}
         </span>
       </div>
       <h3>{title}</h3>

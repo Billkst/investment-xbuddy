@@ -307,7 +307,10 @@ test("真实财报按披露日过滤，合并利润口径可追溯", async (t) =
   applyAction(r, "start");
   await advanceRun(r, { ...config, fuyaoApiKey: "test-only" });
   assert.ok(r.evidence.every((e) => e.asOf === "2023-12-31"));
-  assert.equal(r.evidence.find((e) => e.label === "合并净利润")!.value, 80);
+  const profit = r.evidence.find((e) => e.label === "合并净利润")!;
+  assert.equal(profit.value, 80);
+  const original = profit.raw as { data: { item: Record<string, unknown>[] } };
+  assert.equal(original.data.item[0].net_profit, 80);
 });
 test("缺失时点不作为已验证事实或模型引用", async (t) => {
   const r = await ready("茅台走势");
@@ -477,7 +480,10 @@ test("上海截止日不会纳入次日披露的财报", async (t) => {
   applyAction(r, "start");
   await advanceRun(r, { ...config, fuyaoApiKey: "test-only" });
   assert.ok(r.evidence.every((e) => e.asOf === "2024-12-31"));
-  assert.equal(r.evidence.find((e) => e.label === "合并净利润")!.value, 80);
+  const profit = r.evidence.find((e) => e.label === "合并净利润")!;
+  assert.equal(profit.value, 80);
+  const original = profit.raw as { data: { item: Record<string, unknown>[] } };
+  assert.equal(original.data.item[0].net_profit, 80);
 });
 test("模型服务异常透明降级并保留已尝试预算", async (t) => {
   t.mock.method(
@@ -602,4 +608,29 @@ test("同一日期冲突价格不能生成正常结论", async (t) => {
   assert.equal(r.steps[0].status, "failed");
   assert.match(r.steps[0].error!, /冲突/);
   assert.equal(r.evidence.length, 0);
+});
+
+test("扶摇指数快照使用点位单位且原始响应匹配引用路径", async (t) => {
+  t.mock.method(globalThis, "fetch", async () =>
+    mockResponse({
+      code: 0,
+      data: {
+        timestamp: Date.now(),
+        item: [{ thscode: "000300.SH", last_price: 4200 }],
+      },
+    }),
+  );
+  const run = createRun("沪深300近一月走势", "live");
+  await advanceRun(run, config);
+  const evidence = await executeDataTool(
+    { ...run.steps[0], tool: "market.snapshot" },
+    run,
+    { ...config, fuyaoApiKey: "test-only" },
+  );
+  assert.equal(evidence[0].unit, "点");
+  assert.equal(
+    (evidence[0].raw as { data: { item: { last_price: number }[] } }).data
+      .item[0].last_price,
+    evidence[0].value,
+  );
 });

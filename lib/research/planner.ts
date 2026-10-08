@@ -10,6 +10,7 @@ import {
   BudgetError,
   StopError,
 } from "./types.ts";
+import { modelRequestOptions } from "./model-settings.ts";
 const known: Security[] = [
   { code: "600519.SH", name: "贵州茅台", kind: "stock" },
   { code: "000858.SZ", name: "五粮液", kind: "stock" },
@@ -268,13 +269,9 @@ export async function modelJson(
           { role: "system", content: system },
           { role: "user", content: input },
         ],
-        temperature: 0.2,
         max_tokens: maxTokens,
         response_format: { type: "json_object" },
-        ...(url.hostname === "api.groq.com" &&
-        config.llmModel.startsWith("openai/gpt-oss-")
-          ? { reasoning_effort: "low", include_reasoning: false }
-          : {}),
+        ...modelRequestOptions(config.llmBaseUrl, config.llmModel),
       }),
       signal: AbortSignal.timeout(25000),
     },

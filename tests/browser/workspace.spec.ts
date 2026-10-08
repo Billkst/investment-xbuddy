@@ -25,11 +25,6 @@ test("全部功能免登录开放，工作台与偏好在新标签页恢复并�
   await expect(
     page.getByText("规则运行 · 无模型调用", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("combobox", { name: "数据模式", exact: true }).click();
-  await expect(
-    page.getByRole("option", { name: "真实数据", exact: true }),
-  ).toBeEnabled();
-  await page.getByRole("option", { name: "构造数据演示", exact: true }).click();
   await page.getByRole("button", { name: "研究记忆", exact: true }).click();
   await page
     .getByRole("textbox", { name: "保存研究偏好" })
@@ -42,14 +37,16 @@ test("全部功能免登录开放，工作台与偏好在新标签页恢复并�
     .fill("研究贵州茅台最近三年的盈利质量");
   await page.getByRole("button", { name: "生成研究计划", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "执行计划", exact: true }),
+    page.getByRole("button", { name: "确认并开始研究", exact: true }),
   ).toBeVisible();
+  await page.locator(".process-details > summary").click();
+  await page.getByRole("tab", { name: "证据与上下文", exact: true }).click();
   await expect(page.locator(".context-card")).toContainText("1 条");
   const url = page.url();
   const newTab = await context.newPage();
   await newTab.goto(url);
   await expect(
-    newTab.getByRole("button", { name: "执行计划", exact: true }),
+    newTab.getByRole("button", { name: "确认并开始研究", exact: true }),
   ).toBeVisible();
   await newTab.getByRole("button", { name: /研究记忆/ }).click();
   await expect(newTab.locator(".memory-card")).toContainText("免登录偏好");
@@ -67,6 +64,8 @@ test("全部功能免登录开放，工作台与偏好在新标签页恢复并�
   await expect(other.locator(".memory-card")).toHaveCount(0);
   await otherContext.close();
 
+  await page.getByRole("button", { name: "模型设置", exact: true }).click();
+  await page.getByText("研究额度与本地记录", { exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "清空工作台", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "研究目标" })).toHaveValue("");
@@ -108,9 +107,11 @@ test("禁用草稿存储不影响免登录执行，手机入口无需账号", as
     .fill("沪深300近三个月最大回撤");
   await page.getByRole("button", { name: "生成研究计划", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "执行计划", exact: true }),
+    page.getByRole("button", { name: "确认并开始研究", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "执行计划", exact: true }).click();
+  await page
+    .getByRole("button", { name: "确认并开始研究", exact: true })
+    .click();
   await expect(page.locator(".status-badge")).toContainText("研究已完成");
   expect(
     await page.evaluate(

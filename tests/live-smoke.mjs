@@ -54,7 +54,9 @@ console.log(
 assert.equal(r.status, "completed");
 assert.ok(
   r.evidence.some(
-    (e) => e.source === "腾讯财经公开行情（备用）" && e.quality === "verified",
+    (e) =>
+      ["腾讯财经公开行情（备用）", "扶摇金融数据"].includes(e.source) &&
+      e.quality === "verified",
   ),
 );
 assert.ok(r.evidence.some((e) => e.label === "最大回撤" && e.unit === "%"));
